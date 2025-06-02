@@ -1,0 +1,237 @@
+# Auto-updater configuration for LLM API Aggregator
+# Monitors multiple sources for new models, rate limits, and provider changes
+
+sources:
+  # GitHub community projects
+  - name: "cheahjs/free-llm-api-resources"
+    type: "github"
+    url: "https://api.github.com/repos/cheahjs/free-llm-api-resources"
+    update_interval: 6  # hours
+    enabled: true
+    config:
+      content_path: "src/data.py"
+      readme_path: "README.md"
+      parser: "python_dict"
+      watch_files:
+        - "src/data.py"
+        - "README.md"
+        - "src/pull_available_models.py"
+
+  - name: "zukixa/cool-ai-stuff"
+    type: "github"
+    url: "https://api.github.com/repos/zukixa/cool-ai-stuff"
+    update_interval: 12
+    enabled: true
+    config:
+      content_path: "README.md"
+      parser: "markdown"
+      sections:
+        - "Free AI APIs"
+        - "LLM Providers"
+
+  - name: "wdhdev/free-for-life"
+    type: "github"
+    url: "https://api.github.com/repos/wdhdev/free-for-life"
+    update_interval: 24
+    enabled: true
+    config:
+      content_path: "README.md"
+      parser: "markdown"
+      filter_keywords:
+        - "AI"
+        - "LLM"
+        - "API"
+        - "GPT"
+
+  # Direct API discovery
+  - name: "openrouter_api"
+    type: "api"
+    url: "https://openrouter.ai/api/v1/models"
+    update_interval: 2
+    enabled: true
+    config:
+      auth_header: "Authorization"
+      free_filter: "pricing.prompt == 0"
+      rate_limit_endpoint: "https://openrouter.ai/api/v1/auth/key"
+      model_details_endpoint: "https://openrouter.ai/api/v1/models/{model_id}"
+
+  - name: "groq_api"
+    type: "api"
+    url: "https://api.groq.com/openai/v1/models"
+    update_interval: 4
+    enabled: true
+    config:
+      auth_header: "Authorization"
+      requires_key: true
+      rate_limit_headers:
+        - "x-ratelimit-limit-requests"
+        - "x-ratelimit-limit-tokens"
+        - "x-ratelimit-remaining-requests"
+
+  - name: "cerebras_api"
+    type: "api"
+    url: "https://api.cerebras.ai/v1/models"
+    update_interval: 4
+    enabled: true
+    config:
+      auth_header: "Authorization"
+      requires_key: true
+      free_models_only: true
+
+  # Additional API sources
+  - name: "huggingface_inference"
+    type: "api"
+    url: "https://api-inference.huggingface.co/models"
+    update_interval: 12
+    enabled: false  # Disabled by default due to large number of models
+    config:
+      filter_tags:
+        - "text-generation"
+        - "conversational"
+      free_only: true
+
+  # Web scraping for provider websites
+  - name: "openrouter_website"
+    type: "web_scrape"
+    url: "https://openrouter.ai/models"
+    update_interval: 24
+    enabled: true
+    config:
+      selectors:
+        model_cards: ".model-card, .model-row"
+        model_name: ".model-name, .model-title, h3"
+        pricing: ".pricing-info, .price, .cost"
+        free_badge: ".free-badge, .free-tier, [data-free='true']"
+        context_length: ".context-length, .max-tokens"
+        description: ".model-description, .description"
+      pagination:
+        enabled: true
+        next_button: ".next-page, .pagination-next"
+        max_pages: 10
+
+  - name: "groq_website"
+    type: "web_scrape"
+    url: "https://groq.com/models/"
+    update_interval: 24
+    enabled: true
+    config:
+      selectors:
+        model_cards: ".model-card"
+        model_name: ".model-name"
+        pricing: ".pricing"
+        free_badge: ".free"
+
+  # Browser automation for dashboards (advanced)
+  - name: "provider_dashboards"
+    type: "browser"
+    url: ""
+    update_interval: 168  # Weekly
+    enabled: false  # Disabled by default
+    config:
+      headless: true
+      timeout: 30000
+      providers:
+        - name: "openrouter"
+          login_url: "https://openrouter.ai/login"
+          dashboard_url: "https://openrouter.ai/account"
+          selectors:
+            usage_info: ".usage-stats, .account-usage"
+            rate_limits: ".rate-limit-info, .limits"
+            credits: ".credits, .balance"
+          login_method: "oauth"  # or "credentials"
+
+        - name: "groq"
+          dashboard_url: "https://console.groq.com/playground"
+          selectors:
+            models: ".model-selector option"
+            rate_limits: ".rate-limit-display"
+
+# Update behavior configuration
+update_behavior:
+  # How to handle conflicts when multiple sources provide different info
+  conflict_resolution: "latest_wins"  # or "manual_review", "merge"
+  
+  # Minimum confidence threshold for auto-applying updates
+  confidence_threshold: 0.8
+  
+  # Whether to auto-apply updates or require manual approval
+  auto_apply: true
+  
+  # Backup configuration before applying updates
+  backup_config: true
+  
+  # Notification settings
+  notifications:
+    enabled: true
+    channels:
+      - "log"      # Always log updates
+      - "webhook"  # Optional webhook for external notifications
+    webhook_url: ""  # Set if using webhook notifications
+
+# Rate limiting for update sources
+rate_limiting:
+  github_api:
+    requests_per_hour: 60  # GitHub API limit for unauthenticated requests
+    
+  web_scraping:
+    delay_between_requests: 2  # seconds
+    max_concurrent_requests: 3
+    
+  api_calls:
+    delay_between_requests: 1
+    max_retries: 3
+
+# Caching configuration
+caching:
+  enabled: true
+  cache_duration: 3600  # seconds (1 hour)
+  cache_path: "cache/provider_cache.json"
+  
+  # What to cache
+  cache_models: true
+  cache_rate_limits: true
+  cache_provider_status: true
+
+# Monitoring and alerting
+monitoring:
+  enabled: true
+  
+  # Alert on significant changes
+  alerts:
+    new_provider: true
+    provider_down: true
+    rate_limit_changes: true
+    model_removed: true
+    
+  # Health checks
+  health_checks:
+    enabled: true
+    interval: 300  # seconds (5 minutes)
+    timeout: 10    # seconds
+    
+# Integration with external services
+integrations:
+  # Discord webhook for notifications
+  discord:
+    enabled: false
+    webhook_url: ""
+    
+  # Slack webhook for notifications  
+  slack:
+    enabled: false
+    webhook_url: ""
+    
+  # GitHub issues for tracking provider changes
+  github_issues:
+    enabled: false
+    repository: ""
+    token: ""
+    
+  # Prometheus metrics
+  prometheus:
+    enabled: false
+    port: 9090
+    metrics:
+      - "provider_models_count"
+      - "update_success_rate"
+      - "update_duration"
