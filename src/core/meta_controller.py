@@ -9,9 +9,6 @@ Based on research from:
 """
 
 import json
-import numpy as np
-import torch
-import torch.nn as nn
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -20,6 +17,33 @@ import asyncio
 from collections import defaultdict
 import sqlite3
 import pickle
+
+# Optional PyTorch import
+try:
+    import torch
+    import torch.nn as nn
+    import numpy as np
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    # Create dummy classes for type hints
+    class nn:
+        class Module:
+            pass
+    # Dummy numpy for basic operations
+    class np:
+        @staticmethod
+        def array(x):
+            return x
+        @staticmethod
+        def mean(x):
+            return sum(x) / len(x) if x else 0
+        @staticmethod
+        def std(x):
+            if not x:
+                return 0
+            mean_val = sum(x) / len(x)
+            return (sum((i - mean_val) ** 2 for i in x) / len(x)) ** 0.5
 
 from ..models import ChatCompletionRequest, ModelInfo, ModelCapability
 
@@ -418,11 +442,22 @@ class MetaModelController:
     Uses a small language model with external memory for decision making.
     """
     
-    def __init__(self, model_profiles: Dict[str, ModelCapabilityProfile]):
+    def __init__(self, model_profiles: Dict[str, ModelCapabilityProfile], enable_ml_features: bool = None):
+        if enable_ml_features is None:
+            enable_ml_features = TORCH_AVAILABLE
+            
+        self.ml_enabled = enable_ml_features and TORCH_AVAILABLE
         self.model_profiles = model_profiles
-        self.memory_system = ExternalMemorySystem()
-        self.complexity_analyzer = TaskComplexityAnalyzer()
-        self.cascade_router = FrugalCascadeRouter(model_profiles)
+        
+        if self.ml_enabled:
+            self.memory_system = ExternalMemorySystem()
+            self.complexity_analyzer = TaskComplexityAnalyzer()
+            self.cascade_router = FrugalCascadeRouter(model_profiles)
+        else:
+            print("Warning: PyTorch not available. Using fallback model selection.")
+            self.memory_system = None
+            self.complexity_analyzer = None
+            self.cascade_router = None
         
         # Performance tracking
         self.performance_history = defaultdict(list)
@@ -438,6 +473,9 @@ class MetaModelController:
         Select the optimal model for a given request.
         Returns (model_name, confidence_score).
         """
+        
+        if not self.ml_enabled:
+            return self._fallback_model_selection(request)
         
         # Analyze task complexity
         task_complexity = self.complexity_analyzer.analyze_task_complexity(request)
@@ -682,3 +720,53 @@ class MetaModelController:
             )
         
         return recommendations
+    
+    def _fallback_model_selection(self, request: ChatCompletionRequest) -> Tuple[str, float]:
+        """Simple rule-based model selection when ML features are not available."""
+        
+        # Get message content for analysis
+        message_content = " ".join([msg.get("content", "") for msg in request.messages])
+        content_lower = message_content.lower()
+        
+        # Score models based on simple rules
+        model_scores = {}
+        
+        for model_name, profile in self.model_profiles.items():
+            score = 0.5  # Base score
+            
+            # Prefer free models
+            if hasattr(profile, 'is_free') and profile.is_free:
+                score += 0.3
+            
+            # Check for code-related content
+            if any(keyword in content_lower for keyword in ['code', 'python', 'javascript', 'programming', 'function']):
+                if hasattr(profile, 'capabilities') and 'code_generation' in [cap.lower() for cap in profile.capabilities]:
+                    score += 0.4
+            
+            # Check for reasoning tasks
+            if any(keyword in content_lower for keyword in ['analyze', 'explain', 'reasoning', 'logic', 'solve']):
+                if hasattr(profile, 'capabilities') and 'reasoning' in [cap.lower() for cap in profile.capabilities]:
+                    score += 0.3
+            
+            # Prefer models with higher context length for long inputs
+            input_length = len(message_content)
+            if hasattr(profile, 'context_length'):
+                if input_length > 2000 and profile.context_length > 8000:
+                    score += 0.2
+                elif input_length > 1000 and profile.context_length > 4000:
+                    score += 0.1
+            
+            # Reliability bonus
+            if hasattr(profile, 'reliability_score') and profile.reliability_score > 0.8:
+                score += 0.2
+            
+            model_scores[model_name] = score
+        
+        # Select best model
+        if model_scores:
+            best_model = max(model_scores.items(), key=lambda x: x[1])
+            return best_model[0], min(best_model[1], 1.0)  # Cap confidence at 1.0
+        else:
+            # Fallback to first available model
+            first_model = list(self.model_profiles.keys())[0] if self.model_profiles else "gpt-3.5-turbo"
+            return first_model, 0.5
