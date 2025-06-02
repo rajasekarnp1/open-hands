@@ -5,6 +5,7 @@ FastAPI server for the LLM API Aggregator.
 import asyncio
 import logging
 import time
+import os
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
@@ -13,6 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uvicorn
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
 
 from ..models import (
     ChatCompletionRequest,
@@ -32,6 +37,13 @@ from ..providers.cerebras import create_cerebras_provider
 
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
+
+# Security configuration
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+
+if not ADMIN_TOKEN:
+    logger.warning("ADMIN_TOKEN not set. Admin endpoints will be disabled.")
 
 # Global aggregator instance
 aggregator: Optional[LLMAggregator] = None
@@ -92,12 +104,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Add CORS middleware with security
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -107,6 +119,17 @@ def get_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)) -
     if credentials:
         return credentials.credentials  # Use token as user ID for simplicity
     return None
+
+
+async def verify_admin_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    """Verify admin token for admin endpoints."""
+    if not ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="Admin functionality disabled")
+    
+    if not credentials or credentials.credentials != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+    
+    return credentials.credentials
 
 
 @app.get("/")

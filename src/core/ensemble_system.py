@@ -8,15 +8,39 @@ Based on research from:
 """
 
 import asyncio
-import numpy as np
-import torch
-import torch.nn as nn
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
 import json
 import re
 from collections import defaultdict
+
+# Optional PyTorch import
+try:
+    import torch
+    import torch.nn as nn
+    import numpy as np
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    # Create dummy classes for type hints
+    class nn:
+        class Module:
+            pass
+    # Dummy numpy for basic operations
+    class np:
+        @staticmethod
+        def array(x):
+            return x
+        @staticmethod
+        def mean(x):
+            return sum(x) / len(x) if x else 0
+        @staticmethod
+        def std(x):
+            if not x:
+                return 0
+            mean_val = sum(x) / len(x)
+            return (sum((i - mean_val) ** 2 for i in x) / len(x)) ** 0.5
 
 from ..models import ChatCompletionRequest, ChatCompletionResponse, ChatMessage
 
@@ -496,10 +520,21 @@ class ResponseFuser:
 class EnsembleSystem:
     """Main ensemble system that coordinates multiple models and fuses their responses."""
     
-    def __init__(self):
-        self.quality_evaluator = ResponseQualityEvaluator()
-        self.pairwise_ranker = PairwiseRanker()
-        self.response_fuser = ResponseFuser()
+    def __init__(self, enable_ml_features: bool = None):
+        if enable_ml_features is None:
+            enable_ml_features = TORCH_AVAILABLE
+            
+        self.ml_enabled = enable_ml_features and TORCH_AVAILABLE
+        
+        if self.ml_enabled:
+            self.quality_evaluator = ResponseQualityEvaluator()
+            self.pairwise_ranker = PairwiseRanker()
+            self.response_fuser = ResponseFuser()
+        else:
+            print("Warning: PyTorch not available. Using simplified ensemble system.")
+            self.quality_evaluator = None
+            self.pairwise_ranker = None
+            self.response_fuser = None
         
         # Configuration
         self.max_candidates = 3
@@ -510,6 +545,9 @@ class EnsembleSystem:
                                        model_responses: Dict[str, ChatCompletionResponse],
                                        model_metadata: Dict[str, Dict]) -> ChatCompletionResponse:
         """Generate an ensemble response from multiple model outputs."""
+        
+        if not self.ml_enabled:
+            return self._fallback_ensemble_response(model_responses, model_metadata)
         
         # Create response candidates
         candidates = []
@@ -624,3 +662,46 @@ class EnsembleSystem:
         }
         
         return insights
+    
+    def _fallback_ensemble_response(self, model_responses: Dict[str, ChatCompletionResponse],
+                                  model_metadata: Dict[str, Dict]) -> ChatCompletionResponse:
+        """Simple ensemble response when ML features are not available."""
+        
+        if not model_responses:
+            raise ValueError("No model responses provided")
+        
+        # Simple strategy: pick the response with the highest confidence or first available
+        best_response = None
+        best_score = -1
+        
+        for model_name, response in model_responses.items():
+            metadata = model_metadata.get(model_name, {})
+            
+            # Simple scoring based on available metadata
+            score = 0.5  # Base score
+            
+            # Prefer responses with higher confidence
+            confidence = metadata.get('confidence', 0.5)
+            score += confidence * 0.4
+            
+            # Prefer faster responses
+            response_time = metadata.get('response_time', 1.0)
+            if response_time < 2.0:
+                score += 0.2
+            
+            # Prefer responses with content
+            if response.choices and response.choices[0].message.content:
+                content_length = len(response.choices[0].message.content)
+                if content_length > 50:  # Reasonable response length
+                    score += 0.3
+            
+            if score > best_score:
+                best_score = score
+                best_response = response
+        
+        # Add ensemble metadata
+        if best_response and hasattr(best_response, 'usage') and best_response.usage:
+            best_response.usage['ensemble_mode'] = 'fallback'
+            best_response.usage['ensemble_models'] = len(model_responses)
+        
+        return best_response or list(model_responses.values())[0]
