@@ -233,7 +233,8 @@ async def add_credentials(
     provider: str,
     account_id: str,
     api_key: str,
-    additional_headers: Optional[Dict[str, str]] = None
+    additional_headers: Optional[Dict[str, str]] = None,
+    _: str = Depends(verify_admin_token)
 ):
     """Add API credentials for a provider."""
     
@@ -260,7 +261,7 @@ async def add_credentials(
 
 
 @app.get("/admin/credentials")
-async def list_credentials():
+async def list_credentials(_: str = Depends(verify_admin_token)):
     """List all credentials (without sensitive data)."""
     
     if not aggregator:
@@ -276,7 +277,7 @@ async def list_credentials():
 
 
 @app.delete("/admin/credentials/{provider}/{account_id}")
-async def remove_credentials(provider: str, account_id: str):
+async def remove_credentials(provider: str, account_id: str, _: str = Depends(verify_admin_token)):
     """Remove credentials for a specific account."""
     
     if not aggregator:
@@ -298,7 +299,7 @@ async def remove_credentials(provider: str, account_id: str):
 
 
 @app.get("/admin/providers")
-async def get_provider_status():
+async def get_provider_status(_: str = Depends(verify_admin_token)):
     """Get status of all providers."""
     
     if not aggregator:
@@ -330,7 +331,7 @@ async def get_rate_limit_status(user_id: Optional[str] = Depends(get_user_id)):
 
 
 @app.get("/admin/usage-stats")
-async def get_usage_stats():
+async def get_usage_stats(_: str = Depends(verify_admin_token)):
     """Get usage statistics."""
     
     if not aggregator:
@@ -359,7 +360,7 @@ async def get_usage_stats():
 
 
 @app.post("/admin/rotate-credentials/{provider}")
-async def rotate_credentials(provider: str):
+async def rotate_credentials(provider: str, _: str = Depends(verify_admin_token)):
     """Rotate credentials for a provider."""
     
     if not aggregator:
