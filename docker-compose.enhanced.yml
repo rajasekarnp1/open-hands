@@ -1,0 +1,116 @@
+version: '3.8'
+
+services:
+  openhands-enhanced:
+    build:
+      context: .
+      dockerfile: Dockerfile.enhanced
+    ports:
+      - "8000:8000"
+      - "3001:3001"  # Sci-Fi UI port
+    environment:
+      - INSTALL_TYPE=docker
+      - STABILITY_LEVEL=${STABILITY_LEVEL:-stable}
+      - PERFORMANCE_LEVEL=${PERFORMANCE_LEVEL:-70}
+      - ENABLE_IDLE_IMPROVEMENT=${ENABLE_IDLE_IMPROVEMENT:-false}
+      - ENABLE_VM_MODE=${ENABLE_VM_MODE:-false}
+      - ENABLE_SCIFI_UI=${ENABLE_SCIFI_UI:-false}
+      - ENABLE_MULTI_API=${ENABLE_MULTI_API:-true}
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-openhands-admin-1234}
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001,https://localhost:8000
+      - DATABASE_URL=postgresql://openhands:openhands@postgres:5432/openhands
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./config:/app/config
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    networks:
+      - openhands-network
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=openhands
+      - POSTGRES_USER=openhands
+      - POSTGRES_PASSWORD=openhands
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - openhands-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    networks:
+      - openhands-network
+    restart: unless-stopped
+
+  # Optional: Sci-Fi UI service
+  edex-ui:
+    build:
+      context: ./edex-ui
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - OPENHANDS_API_URL=http://openhands-enhanced:8000
+    depends_on:
+      - openhands-enhanced
+    networks:
+      - openhands-network
+    restart: unless-stopped
+    profiles:
+      - scifi-ui
+
+  # Optional: System monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - openhands-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=openhands
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - openhands-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  openhands-network:
+    driver: bridge

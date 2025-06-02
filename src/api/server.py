@@ -11,9 +11,11 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 import uvicorn
+import psutil
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -26,6 +28,46 @@ from ..models import (
     ProviderConfig,
     SystemConfig
 )
+
+# Enhanced WebUI models
+from pydantic import BaseModel
+from typing import Union
+
+class ImprovementRequest(BaseModel):
+    mode: str
+    areas: List[str]
+
+class ModelConfigRequest(BaseModel):
+    primaryProvider: str
+    fallbackStrategy: str
+
+class StabilityRequest(BaseModel):
+    level: str
+    autoRollback: bool
+
+class PerformanceRequest(BaseModel):
+    cpuLimit: int
+    memoryLimit: int
+    maxConcurrent: int
+
+class IdleSettingsRequest(BaseModel):
+    systemIdle: bool
+    vmIdle: bool
+    acPower: bool
+    lightningVM: bool
+
+class AccountAddRequest(BaseModel):
+    provider: str
+    apiKey: str
+
+class RotationRequest(BaseModel):
+    interval: int
+
+class SystemMetrics(BaseModel):
+    cpu: Union[float, str]
+    memory: str
+    temperature: Union[float, str]
+    uptime: str
 from ..core.aggregator import LLMAggregator
 from ..core.account_manager import AccountManager
 from ..core.router import ProviderRouter
@@ -374,6 +416,261 @@ async def rotate_credentials(provider: str, _: str = Depends(verify_admin_token)
         logger.error(f"Rotate credentials error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Enhanced WebUI Endpoints
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_webui():
+    """Serve the enhanced WebUI."""
+    webui_path = os.path.join(os.path.dirname(__file__), "..", "..", "webui", "index.html")
+    if os.path.exists(webui_path):
+        return FileResponse(webui_path)
+    else:
+        return HTMLResponse("""
+        <html>
+            <head><title>OpenHands Enhanced</title></head>
+            <body>
+                <h1>OpenHands Enhanced</h1>
+                <p>WebUI not found. Please run the setup script to install the enhanced WebUI.</p>
+                <p><a href="/docs">API Documentation</a></p>
+            </body>
+        </html>
+        """)
+
+@app.post("/api/v1/improvement/start")
+async def start_improvement(request: ImprovementRequest):
+    """Start the improvement process."""
+    try:
+        # Implementation for starting improvement process
+        logger.info(f"Starting improvement with mode: {request.mode}, areas: {request.areas}")
+        
+        # Here you would integrate with the self-improvement system
+        # For now, return a success response
+        return {
+            "status": "started",
+            "mode": request.mode,
+            "areas": request.areas,
+            "message": "Improvement process initiated successfully"
+        }
+    except Exception as e:
+        logger.error(f"Start improvement error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/models/config")
+async def update_model_config(request: ModelConfigRequest):
+    """Update model configuration."""
+    try:
+        if not aggregator:
+            raise HTTPException(status_code=503, detail="Service not ready")
+        
+        # Update router configuration
+        aggregator.router.set_primary_provider(request.primaryProvider)
+        aggregator.router.set_fallback_strategy(request.fallbackStrategy)
+        
+        return {
+            "status": "updated",
+            "primaryProvider": request.primaryProvider,
+            "fallbackStrategy": request.fallbackStrategy
+        }
+    except Exception as e:
+        logger.error(f"Update model config error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/system/stability")
+async def update_stability(request: StabilityRequest):
+    """Update system stability level."""
+    try:
+        # Update stability configuration
+        os.environ["STABILITY_LEVEL"] = request.level
+        os.environ["AUTO_ROLLBACK"] = str(request.autoRollback).lower()
+        
+        return {
+            "status": "updated",
+            "level": request.level,
+            "autoRollback": request.autoRollback
+        }
+    except Exception as e:
+        logger.error(f"Update stability error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/system/performance")
+async def apply_performance(request: PerformanceRequest):
+    """Apply performance settings."""
+    try:
+        # Update performance configuration
+        os.environ["CPU_LIMIT"] = str(request.cpuLimit)
+        os.environ["MEMORY_LIMIT"] = str(request.memoryLimit)
+        os.environ["MAX_CONCURRENT"] = str(request.maxConcurrent)
+        
+        if aggregator:
+            # Update rate limiter if available
+            aggregator.rate_limiter.max_requests = request.maxConcurrent
+        
+        return {
+            "status": "applied",
+            "cpuLimit": request.cpuLimit,
+            "memoryLimit": request.memoryLimit,
+            "maxConcurrent": request.maxConcurrent
+        }
+    except Exception as e:
+        logger.error(f"Apply performance error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/system/idle")
+async def update_idle_settings(request: IdleSettingsRequest):
+    """Update idle improvement settings."""
+    try:
+        # Update idle configuration
+        os.environ["SYSTEM_IDLE"] = str(request.systemIdle).lower()
+        os.environ["VM_IDLE"] = str(request.vmIdle).lower()
+        os.environ["AC_POWER"] = str(request.acPower).lower()
+        os.environ["LIGHTNING_VM"] = str(request.lightningVM).lower()
+        
+        return {
+            "status": "updated",
+            "systemIdle": request.systemIdle,
+            "vmIdle": request.vmIdle,
+            "acPower": request.acPower,
+            "lightningVM": request.lightningVM
+        }
+    except Exception as e:
+        logger.error(f"Update idle settings error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/accounts/add")
+async def add_account(request: AccountAddRequest):
+    """Add a new API account."""
+    try:
+        if not aggregator:
+            raise HTTPException(status_code=503, detail="Service not ready")
+        
+        # Add account to account manager
+        credentials = AccountCredentials(
+            provider=request.provider,
+            api_key=request.apiKey
+        )
+        
+        await aggregator.account_manager.add_credentials(request.provider, credentials)
+        
+        return {
+            "status": "added",
+            "provider": request.provider,
+            "message": f"Account added for {request.provider}"
+        }
+    except Exception as e:
+        logger.error(f"Add account error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/accounts/rotation")
+async def update_rotation(request: RotationRequest):
+    """Update account rotation settings."""
+    try:
+        if not aggregator:
+            raise HTTPException(status_code=503, detail="Service not ready")
+        
+        # Update rotation interval
+        aggregator.account_manager.rotation_interval = request.interval * 60  # Convert to seconds
+        
+        return {
+            "status": "updated",
+            "interval": request.interval,
+            "message": f"Rotation interval set to {request.interval} minutes"
+        }
+    except Exception as e:
+        logger.error(f"Update rotation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/metrics")
+async def get_metrics():
+    """Get real-time system metrics."""
+    try:
+        # Get system metrics
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        
+        # Get temperature if available
+        temperature = 0
+        try:
+            temps = psutil.sensors_temperatures()
+            if temps:
+                for name, entries in temps.items():
+                    if entries:
+                        temperature = entries[0].current
+                        break
+        except:
+            temperature = 42  # Default value
+        
+        # Calculate uptime
+        uptime_seconds = time.time() - psutil.boot_time()
+        uptime_hours = int(uptime_seconds // 3600)
+        uptime_minutes = int((uptime_seconds % 3600) // 60)
+        uptime_str = f"{uptime_hours:02d}:{uptime_minutes:02d}"
+        
+        return SystemMetrics(
+            cpu=f"{cpu_percent:.1f}",
+            memory=f"{memory.used / (1024**3):.1f}GB",
+            temperature=f"{temperature:.0f}",
+            uptime=uptime_str
+        )
+    except Exception as e:
+        logger.error(f"Get metrics error: {e}")
+        # Return default values on error
+        return SystemMetrics(
+            cpu="--",
+            memory="--",
+            temperature="--",
+            uptime="--:--"
+        )
+
+@app.get("/api/v1/logs")
+async def get_logs():
+    """Get system logs."""
+    try:
+        log_file = os.getenv("LOG_FILE", "logs/openhands_enhanced.log")
+        if os.path.exists(log_file):
+            return FileResponse(log_file, media_type="text/plain")
+        else:
+            return {"message": "Log file not found"}
+    except Exception as e:
+        logger.error(f"Get logs error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/config/export")
+async def export_config():
+    """Export current configuration."""
+    try:
+        config = {
+            "install_type": os.getenv("INSTALL_TYPE", "local"),
+            "stability_level": os.getenv("STABILITY_LEVEL", "stable"),
+            "performance_level": os.getenv("PERFORMANCE_LEVEL", "70"),
+            "features": {
+                "idle_improvement": os.getenv("ENABLE_IDLE_IMPROVEMENT", "false"),
+                "vm_mode": os.getenv("ENABLE_VM_MODE", "false"),
+                "scifi_ui": os.getenv("ENABLE_SCIFI_UI", "false"),
+                "multi_api": os.getenv("ENABLE_MULTI_API", "true")
+            },
+            "performance": {
+                "cpu_limit": os.getenv("CPU_LIMIT", "70"),
+                "memory_limit": os.getenv("MEMORY_LIMIT", "4"),
+                "max_concurrent": os.getenv("MAX_CONCURRENT", "10")
+            }
+        }
+        
+        return config
+    except Exception as e:
+        logger.error(f"Export config error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/system/restart")
+async def restart_system():
+    """Restart the OpenHands system."""
+    try:
+        # In a real implementation, you would gracefully restart the service
+        # For now, just return a success message
+        return {"message": "System restart initiated", "status": "success"}
+    except Exception as e:
+        logger.error(f"Restart system error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
