@@ -62,10 +62,10 @@ class RecursiveSelfOptimizer:
         
         # Read the current OpenHands implementation
         try:
-            with open("/workspace/experimental_optimizer.py", "r") as f:
+            with open("experimental_optimizer.py", "r") as f: # Use relative path
                 source_code = f.read()
         except FileNotFoundError:
-            console.print("[red]❌ Could not find experimental_optimizer.py[/red]")
+            console.print("[red]❌ Could not find experimental_optimizer.py (looked in current directory)[/red]")
             return None
         
         # Parse the AST to analyze the OpenHandsIntegrator class
@@ -153,7 +153,7 @@ class RecursiveSelfOptimizer:
         )
         
         # Save the improved implementation
-        clone_file = Path(f"/workspace/{clone_class.lower()}.py")
+        clone_file = Path(f"{clone_class.lower()}.py") # Use relative path
         clone_file.write_text(improved_code)
         
         self.clone_versions.append(clone_version)
@@ -606,7 +606,8 @@ class SimpleMLPredictor:
     def _display_cycle_results(self, results: Dict[str, Any]):
         """Display results of an optimization cycle."""
         
-        table = Table(title=f"Cycle {results['cycle_number'] + 1} Results")
+        # results['cycle_number'] should reflect the actual completed cycle number
+        table = Table(title=f"Cycle {results['cycle_number']} Results")
         table.add_column("Component", style="cyan")
         table.add_column("Status", style="green")
         table.add_column("Details", style="yellow")

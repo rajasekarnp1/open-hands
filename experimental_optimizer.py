@@ -1411,20 +1411,24 @@ class ExperimentalAggregator:
         
         # Initialize base aggregator
         from src.core.account_manager import AccountManager
-        from src.core.router import IntelligentRouter
+        # Corrected Router Import and Instantiation
+        from src.core.router import ProviderRouter
         from src.core.rate_limiter import RateLimiter
-        from src.providers.openrouter import OpenRouterProvider
-        from src.providers.groq import GroqProvider
-        from src.providers.cerebras import CerebrasProvider
+        # Corrected Provider Imports
+        from src.providers.openrouter import create_openrouter_provider
+        from src.providers.groq import create_groq_provider
+        from src.providers.cerebras import create_cerebras_provider
         
         providers = [
-            OpenRouterProvider(),
-            GroqProvider(), 
-            CerebrasProvider()
+            create_openrouter_provider([]),
+            create_groq_provider([]),
+            create_cerebras_provider([])
         ]
         
         account_manager = AccountManager()
-        router = IntelligentRouter()
+        # Corrected Router Instantiation
+        provider_configs = {provider.name: provider.config for provider in providers}
+        router = ProviderRouter(provider_configs)
         rate_limiter = RateLimiter()
         
         self.aggregator = LLMAggregator(
