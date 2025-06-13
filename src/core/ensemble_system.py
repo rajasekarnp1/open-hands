@@ -41,6 +41,15 @@ except ImportError:
                 return 0
             mean_val = sum(x) / len(x)
             return (sum((i - mean_val) ** 2 for i in x) / len(x)) ** 0.5
+        @staticmethod
+        def min(x):
+            return min(x) if x else 0
+        @staticmethod
+        def max(x):
+            return max(x) if x else 0
+        # Note: np.median and np.random.choice are not yet shimmed.
+        # np.random.choice is used in _weighted_fusion, which should only run if ml_enabled is True (real numpy).
+        # np.median is not currently used in get_ensemble_insights, but if added, would need a shim.
 
 from ..models import ChatCompletionRequest, ChatCompletionResponse, ChatMessage
 

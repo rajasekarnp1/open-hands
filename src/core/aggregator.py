@@ -84,7 +84,32 @@ class LLMAggregator:
         logger.info(f"Initialized LLM Aggregator with {len(self.providers)} providers")
         logger.info(f"Meta-controller enabled: {self.enable_meta_controller}")
         logger.info(f"Ensemble system enabled: {self.enable_ensemble}")
-    
+
+    def _create_model_capability_profile(self, model: ModelInfo, provider_name: str) -> ModelCapabilityProfile:
+        """Helper function to create a ModelCapabilityProfile for a given model."""
+        # This ensures ModelCapabilityProfile is in scope. It's already imported at the top.
+        # from .meta_controller import ModelCapabilityProfile
+
+        profile = ModelCapabilityProfile(
+            model_name=model.name,
+            provider=provider_name,
+            size_category=self._categorize_model_size(model),
+            reasoning_ability=self._estimate_reasoning_ability(model),
+            code_generation=self._estimate_code_generation(model),
+            mathematical_reasoning=self._estimate_math_reasoning(model),
+            creative_writing=self._estimate_creative_writing(model),
+            factual_knowledge=self._estimate_factual_knowledge(model),
+            instruction_following=self._estimate_instruction_following(model),
+            context_handling=self._estimate_context_handling(model),
+            avg_response_time=2.0,  # Initial estimate
+            reliability_score=0.8,  # Initial estimate
+            cost_per_token=0.0 if model.is_free else 0.001, # Example cost
+            max_context_length=model.context_length or 4096,
+            domain_expertise=self._identify_domain_expertise(model),
+            preferred_task_types=self._identify_preferred_tasks(model)
+        )
+        return profile
+
     def _initialize_meta_controller(self) -> MetaModelController:
         """Initialize the meta-controller with model capability profiles."""
         
@@ -94,32 +119,8 @@ class LLMAggregator:
             models = provider.list_models()
             
             for model in models:
-                # Create capability profile for each model
-                profile = ModelCapabilityProfile(
-                    model_name=model.name,
-                    provider=provider_name,
-                    size_category=self._categorize_model_size(model),
-                    
-                    # Capability scores (estimated based on model characteristics)
-                    reasoning_ability=self._estimate_reasoning_ability(model),
-                    code_generation=self._estimate_code_generation(model),
-                    mathematical_reasoning=self._estimate_math_reasoning(model),
-                    creative_writing=self._estimate_creative_writing(model),
-                    factual_knowledge=self._estimate_factual_knowledge(model),
-                    instruction_following=self._estimate_instruction_following(model),
-                    context_handling=self._estimate_context_handling(model),
-                    
-                    # Performance metrics (initial estimates)
-                    avg_response_time=2.0,  # Will be updated with real data
-                    reliability_score=0.8,  # Will be updated with real data
-                    cost_per_token=0.0 if model.is_free else 0.001,
-                    max_context_length=model.context_length or 4096,
-                    
-                    # Specializations
-                    domain_expertise=self._identify_domain_expertise(model),
-                    preferred_task_types=self._identify_preferred_tasks(model)
-                )
-                
+                # Create capability profile for each model using the new helper method
+                profile = self._create_model_capability_profile(model, provider_name)
                 model_profiles[model.name] = profile
         
         return MetaModelController(model_profiles)
@@ -799,7 +800,8 @@ class LLMAggregator:
     async def analyze_task_complexity(self, request: ChatCompletionRequest) -> Optional[Dict[str, Any]]:
         """Analyze the complexity of a task using the meta-controller."""
         
-        if not self.meta_controller:
+        if not self.meta_controller or not self.meta_controller.complexity_analyzer:
+            logger.warning("Meta-controller or its complexity analyzer is not available for task complexity analysis.")
             return None
         
         complexity = self.meta_controller.complexity_analyzer.analyze_task_complexity(request)

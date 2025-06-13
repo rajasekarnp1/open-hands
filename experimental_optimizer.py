@@ -874,32 +874,42 @@ Evaluate:
         
         # Simulate processing (replace with actual LLM calls)
         if step == "analyze_task":
+            # Expected by "generate_prompts": {task_analysis}, {requirements}
+            analysis_summary = "Task complexity: medium. Requires reasoning and structured_output."
+            requirements_summary = "Success: Clear, actionable response. Challenges: Ambiguity, multiple approaches."
             return {
                 "task_complexity": "medium",
                 "required_capabilities": ["reasoning", "structured_output"],
                 "success_criteria": "Clear, actionable response",
-                "challenges": ["Ambiguous requirements", "Multiple valid approaches"]
+                "challenges": ["Ambiguous requirements", "Multiple valid approaches"],
+                "task_analysis": analysis_summary, # Added
+                "requirements": requirements_summary # Added
             }
         
         elif step == "generate_prompts":
+            # Expected by "evaluate_prompts": {prompts}, {criteria}
             return {
                 "prompts": [
                     "Step-by-step approach: Please analyze this systematically...",
                     "Direct approach: Provide a clear answer to...",
                     "Creative approach: Think creatively about..."
-                ]
+                ],
+                "criteria": "Clarity, Completeness, Efficiency, Expected Performance" # Added
             }
         
         elif step == "evaluate_prompts":
+            # Expected by "select_best": {evaluations}, {selection_criteria}
             return {
                 "evaluations": [
                     {"clarity": 8, "completeness": 9, "efficiency": 7, "performance": 8},
                     {"clarity": 9, "completeness": 7, "efficiency": 9, "performance": 8},
                     {"clarity": 7, "completeness": 8, "efficiency": 8, "performance": 7}
-                ]
+                ],
+                "selection_criteria": "Highest overall score, balancing clarity and performance" # Added
             }
         
         elif step == "select_best":
+            # This is the last step in "prompt_optimization" chain, no new keys needed for next step.
             return {
                 "selected_prompt": "Step-by-step approach: Please analyze this systematically...",
                 "reasoning": "Highest completeness score with good overall performance",
@@ -907,28 +917,39 @@ Evaluate:
             }
         
         elif step == "analyze_performance":
+            # Expected by "identify_bottlenecks": {analysis}, {system_state}
+            analysis_summary = "Bottlenecks: Response time, Cache efficiency. Trends: Improving. Recommendations: Optimize caching, Improve routing."
             return {
                 "bottlenecks_identified": ["Response time", "Cache efficiency"],
                 "trends": "Improving over time",
-                "recommendations": ["Optimize caching", "Improve routing"]
+                "recommendations": ["Optimize caching", "Improve routing"],
+                "analysis": analysis_summary, # Added
+                "system_state": "Current system stable, monitoring active" # Added
             }
         
         elif step == "identify_bottlenecks":
+            # Expected by "generate_solutions": {bottlenecks}, {constraints}
+            bottlenecks_summary = "Primary: Provider selection latency, Cache misses. Secondary: Rate limiting overhead."
             return {
                 "primary_bottlenecks": ["Provider selection latency", "Cache misses"],
                 "secondary_issues": ["Rate limiting overhead"],
-                "impact_scores": {"high": 2, "medium": 1, "low": 0}
+                "impact_scores": {"high": 2, "medium": 1, "low": 0},
+                "bottlenecks": bottlenecks_summary, # Added
+                "constraints": "Maintain 99% uptime, budget limit $X" # Added
             }
         
         elif step == "generate_solutions":
+            # Expected by "validate_solutions": {solutions}, {context}
             return {
                 "solutions": [
                     {"name": "Predictive caching", "effort": "medium", "impact": "high"},
                     {"name": "Algorithm optimization", "effort": "low", "impact": "medium"}
-                ]
+                ],
+                "context": "Validating for production deployment" # Added
             }
         
         elif step == "validate_solutions":
+            # This is the last step in "system_optimization" chain, no new keys needed for next step.
             return {
                 "validated_solutions": ["Predictive caching"],
                 "rejected_solutions": [],
@@ -1538,7 +1559,8 @@ class ExperimentalAggregator:
             "system_optimization",
             {
                 "performance_data": system_data["performance_history"],
-                "current_status": system_data["provider_status"]
+                "current_status": system_data["provider_status"],
+                "trends": "Simulated historical trends show stable performance with occasional peaks." # Added placeholder
             }
         )
         

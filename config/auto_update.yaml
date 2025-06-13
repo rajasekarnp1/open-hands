@@ -8,7 +8,7 @@ sources:
     - README.md
     - src/pull_available_models.py
   enabled: true
-  last_updated: 2025-06-13 05:44:41.457061
+  last_updated: 2025-06-13 13:09:06.102740
   name: cheahjs/free-llm-api-resources
   type: github
   update_interval: 6
@@ -20,7 +20,7 @@ sources:
     - Free AI APIs
     - LLM Providers
   enabled: true
-  last_updated: 2025-06-13 05:44:41.457061
+  last_updated: 2025-06-13 13:09:06.102740
   name: zukixa/cool-ai-stuff
   type: github
   update_interval: 12
@@ -31,7 +31,7 @@ sources:
     model_details_endpoint: https://openrouter.ai/api/v1/models/{model_id}
     rate_limit_endpoint: https://openrouter.ai/api/v1/auth/key
   enabled: true
-  last_updated: 2025-06-13 05:44:41.457061
+  last_updated: 2025-06-13 13:09:06.102740
   name: openrouter_api
   type: api
   update_interval: 2
@@ -44,7 +44,7 @@ sources:
     - x-ratelimit-remaining-requests
     requires_key: true
   enabled: true
-  last_updated: 2025-06-13 05:44:41.457061
+  last_updated: 2025-06-13 13:09:06.102740
   name: groq_api
   type: api
   update_interval: 4
@@ -54,7 +54,7 @@ sources:
     free_models_only: true
     requires_key: true
   enabled: true
-  last_updated: 2025-06-13 05:44:41.457061
+  last_updated: 2025-06-13 13:09:06.102740
   name: cerebras_api
   type: api
   update_interval: 4
@@ -72,7 +72,7 @@ sources:
       model_name: .model-name, .model-title, h3
       pricing: .pricing-info, .price, .cost
   enabled: true
-  last_updated: 2025-06-13 05:44:41.457061
+  last_updated: 2025-06-13 13:09:06.134601
   name: openrouter_website
   type: web_scrape
   update_interval: 24
@@ -109,7 +109,7 @@ sources:
     - GPT
     parser: markdown
   enabled: true
-  last_updated: 2025-06-13 05:44:41.457061
+  last_updated: 2025-06-13 13:09:06.134601
   name: wdhdev/free-for-life
   type: github
   update_interval: 24
@@ -132,7 +132,7 @@ sources:
       model_name: .model-name
       pricing: .pricing
   enabled: true
-  last_updated: 2025-06-13 05:44:41.457061
+  last_updated: 2025-06-13 13:09:06.134601
   name: groq_website
   type: web_scrape
   update_interval: 24

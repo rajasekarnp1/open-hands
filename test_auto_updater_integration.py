@@ -25,12 +25,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from src.core.aggregator import LLMAggregator
 from src.core.auto_updater import AutoUpdater, integrate_auto_updater
 from src.core.account_manager import AccountManager
-from src.core.router import IntelligentRouter
+from src.core.router import ProviderRouter # Changed from IntelligentRouter
 from src.core.rate_limiter import RateLimiter
-from src.providers.openrouter import OpenRouterProvider
-from src.providers.groq import GroqProvider
-from src.providers.cerebras import CerebrasProvider
-from src.models import ChatCompletionRequest, Message
+# Changed provider imports to use factory functions
+from src.providers.openrouter import create_openrouter_provider
+from src.providers.groq import create_groq_provider
+from src.providers.cerebras import create_cerebras_provider
+from src.models import ChatCompletionRequest, ChatMessage # Changed Message to ChatMessage
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -59,14 +60,15 @@ async def test_auto_updater_integration():
     
     # Create providers
     providers = [
-        OpenRouterProvider(),
-        GroqProvider(),
-        CerebrasProvider()
+        create_openrouter_provider([]),
+        create_groq_provider([]),
+        create_cerebras_provider([])
     ]
     
     # Create supporting components
     account_manager = AccountManager()
-    router = IntelligentRouter()
+    provider_configs = {provider.name: provider.config for provider in providers}
+    router = ProviderRouter(provider_configs) # Changed from IntelligentRouter()
     rate_limiter = RateLimiter()
     
     # Create aggregator with auto-updater enabled
@@ -198,7 +200,7 @@ async def test_auto_updater_integration():
     test_request = ChatCompletionRequest(
         model="auto",  # Let the system choose
         messages=[
-            Message(role="user", content="Write a Python function to calculate fibonacci numbers")
+            ChatMessage(role="user", content="Write a Python function to calculate fibonacci numbers") # Changed Message to ChatMessage
         ],
         max_tokens=100
     )

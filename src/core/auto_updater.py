@@ -371,7 +371,16 @@ class AutoUpdater:
             
             # Filter for free models if specified
             if "free_filter" in config:
-                models = [m for m in models if config["free_filter"](m)]
+                filter_config = config["free_filter"]
+                if callable(filter_config):
+                    models = [m for m in models if filter_config(m)]
+                elif isinstance(filter_config, str) and filter_config == "pricing.prompt == 0":
+                    # Apply the specific logic for OpenRouter's known free_filter string
+                    # This assumes 'models' is a list of dictionaries from JSON
+                    models = [m for m in models if isinstance(m, dict) and m.get("pricing", {}).get("prompt", 0) == 0]
+                elif isinstance(filter_config, str):
+                    # Log a warning if it's a string but not the one we know how to handle
+                    logger.warning(f"Unsupported string-based free_filter encountered for source {source.name}: {filter_config}")
             
             # Convert to ModelInfo objects
             new_models = []
