@@ -131,8 +131,8 @@ sources:
       model_cards: .model-card
       model_name: .model-name
       pricing: .pricing
-  enabled: true
-  last_updated: 2025-06-13 13:09:06.134601
+  enabled: false # Changed from true to false
+  last_updated: 2025-06-13 13:09:06.134601 # This timestamp will remain as is
   name: groq_website
   type: web_scrape
   update_interval: 24
