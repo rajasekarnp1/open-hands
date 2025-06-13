@@ -1,0 +1,59 @@
+{
+  "name": "openhands-ai-assistant",
+  "displayName": "OpenHands AI Assistant",
+  "description": "VS Code extension for OpenHands AI, providing contextual assistance.",
+  "version": "0.0.1",
+  "publisher": "openhands-dev",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Tools",
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:openhands.askOpenHands",
+    "onCommand:openhands.invokeCodeAgent"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "openhands.askOpenHands",
+        "title": "Ask OpenHands"
+      },
+      {
+        "command": "openhands.invokeCodeAgent",
+        "title": "Ask OpenHands Code Agent"
+      }
+    ],
+    "configuration": {
+      "title": "OpenHands AI Assistant",
+      "properties": {
+        "openhands.api.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Base URL for the OpenHands API."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "18.x",
+    "typescript": "^5.0.0",
+    "eslint": "^8.0.0",
+    "@typescript-eslint/parser": "^5.0.0",
+    "@typescript-eslint/eslint-plugin": "^5.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.0.0"
+  }
+}

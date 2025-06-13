@@ -20,11 +20,17 @@ from src.config import settings # Centralized settings
 from ..models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
+    ChatMessage,
     AccountCredentials,
     ProviderConfig,
-    SystemConfig
+    SystemConfig,
+    CodeAgentRequest, # New import
+    CodeAgentResponse # New import
 )
+from pydantic import BaseModel
+
 from ..core.aggregator import LLMAggregator
+from ..agents.code_agent import CodeAgent # New import
 from ..core.account_manager import AccountManager
 from ..core.router import ProviderRouter
 from ..core.rate_limiter import RateLimiter, RateLimitExceeded
@@ -42,55 +48,68 @@ security = HTTPBearer(auto_error=False)
 if not settings.ADMIN_TOKEN:
     logger.warning("ADMIN_TOKEN not set in environment or .env file. Admin endpoints will be disabled if called.")
 
-# Global aggregator instance
+# Global instances
 aggregator: Optional[LLMAggregator] = None
+code_agent_instance: Optional[CodeAgent] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global aggregator
+    global aggregator, code_agent_instance
     
     # Startup
-    logger.info("Starting LLM API Aggregator...")
+    logger.info("Starting LLM API Aggregator and Agents...")
     
     # Initialize components
-    account_manager = AccountManager()
+    account_manager = AccountManager() # Consider making this part of settings or a singleton
     rate_limiter = RateLimiter()
     
     # Create providers
-    providers = []
-    
-    # Initialize providers with empty credentials (will be added via API)
-    openrouter = create_openrouter_provider([])
-    groq = create_groq_provider([])
-    cerebras = create_cerebras_provider([])
-    
-    providers.extend([openrouter, groq, cerebras])
-    
-    # Create provider configs dict
-    provider_configs = {provider.name: provider.config for provider in providers}
+    # TODO: Dynamically discover and load providers based on config
+    providers_list = []
+
+    # Initialize providers with empty credentials (will be populated by AccountManager)
+    from ..providers.openrouter import create_openrouter_provider
+    from ..providers.groq import create_groq_provider
+    from ..providers.cerebras import create_cerebras_provider
+    # Import Anthropic provider factory function
+    from ..providers.anthropic import create_anthropic_provider
+
+    providers_list.append(create_openrouter_provider([]))
+    providers_list.append(create_groq_provider([]))
+    providers_list.append(create_cerebras_provider([]))
+    providers_list.append(create_anthropic_provider([])) # Add Anthropic
+
+    # Create provider configs dict for the router
+    # Assuming provider config is loaded from a central place or default is used.
+    # For now, router might rely on default configs within each provider if not overridden.
+    provider_configs = {provider.name: provider.config for provider in providers_list}
     
     # Initialize router
-    router = ProviderRouter(provider_configs)
+    router = ProviderRouter(provider_configs) # router needs provider configurations
     
     # Initialize aggregator
     aggregator = LLMAggregator(
-        providers=providers,
+        providers=providers_list,
         account_manager=account_manager,
         router=router,
         rate_limiter=rate_limiter
     )
+
+    # Initialize CodeAgent
+    code_agent_instance = CodeAgent(llm_aggregator=aggregator)
     
-    logger.info("LLM API Aggregator started successfully")
+    logger.info("LLM API Aggregator and Agents started successfully")
     
     yield
     
     # Shutdown
-    logger.info("Shutting down LLM API Aggregator...")
+    logger.info("Shutting down LLM API Aggregator and Agents...")
     if aggregator:
         await aggregator.close()
-    logger.info("LLM API Aggregator shut down")
+    # No specific close needed for CodeAgent unless it holds resources
+    logger.info("LLM API Aggregator and Agents shut down")
 
 
 # Create FastAPI app
@@ -188,6 +207,100 @@ async def chat_completions(
         raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         logger.error(f"Chat completion error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Pydantic model for the new contextual chat endpoint
+class ContextualChatRequest(BaseModel):
+    prompt: str
+    selected_text: Optional[str] = None
+    active_file_content: Optional[str] = None
+    model: Optional[str] = "auto"
+    provider: Optional[str] = None
+    model_quality: Optional[str] = None
+    stream: bool = False
+    # Add other relevant parameters from ChatCompletionRequest if needed
+    # e.g., max_tokens, temperature, etc.
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    stop: Optional[List[str]] = None # Assuming stop is List[str] based on ChatCompletionRequest
+
+
+@app.post("/v1/contextual_chat/completions", response_model=ChatCompletionResponse)
+async def contextual_chat_completions(
+    request: ContextualChatRequest,
+    background_tasks: BackgroundTasks, # Keep if needed for background tasks
+    user_id: Optional[str] = Depends(get_user_id) # Keep for consistency
+):
+    """Endpoint for contextual chat, combining prompt with editor context."""
+
+    if not aggregator:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    full_prompt = f"{request.prompt}"
+    if request.selected_text:
+        full_prompt += f"\n\n## Selected Code Context:\n```\n{request.selected_text}\n```"
+    if request.active_file_content:
+        # Limit full file context to avoid overly large prompts, e.g., first/last N lines or a section around selection
+        # For now, let's include a placeholder for this idea. A simple truncation might be:
+        MAX_FILE_CONTEXT_LEN = 10000 # Characters
+        file_context_to_send = request.active_file_content
+        if len(file_context_to_send) > MAX_FILE_CONTEXT_LEN:
+            # Basic truncation, could be smarter (e.g. keep start and end)
+            file_context_to_send = request.active_file_content[:MAX_FILE_CONTEXT_LEN] + "\n... (truncated)"
+        full_prompt += f"\n\n## Full File Context (partial):\n```\n{file_context_to_send}\n```"
+
+    chat_request = ChatCompletionRequest(
+        messages=[ChatMessage(role="user", content=full_prompt)],
+        model=request.model if request.model else "auto",
+        provider=request.provider,
+        model_quality=request.model_quality,
+        stream=request.stream,
+        max_tokens=request.max_tokens,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        stop=request.stop
+        # user=user_id # Can pass user_id if your aggregator/providers use it
+    )
+
+    try:
+        if chat_request.stream:
+            async def generate_stream():
+                async for chunk in aggregator.chat_completion_stream(chat_request, user_id):
+                    yield f"data: {chunk.json()}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                generate_stream(),
+                media_type="text/event-stream", # Correct media type for SSE
+                headers={"Cache-Control": "no-cache"}
+            )
+        else:
+            response = await aggregator.chat_completion(chat_request, user_id)
+            return response
+
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except Exception as e:
+        logger.error(f"Contextual chat completion error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/agents/code/invoke", response_model=CodeAgentResponse)
+async def code_agent_invoke(
+    request: CodeAgentRequest,
+    user_id: Optional[str] = Depends(get_user_id) # For potential future use (e.g. user-specific limits)
+):
+    """Endpoint to invoke the CodeAgent."""
+    if not code_agent_instance:
+        raise HTTPException(status_code=503, detail="CodeAgent not ready")
+
+    try:
+        response = await code_agent_instance.generate_code(request)
+        return response
+    except Exception as e:
+        logger.error(f"CodeAgent invocation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

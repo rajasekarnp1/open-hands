@@ -83,6 +83,15 @@ class ProviderRouter:
     async def get_provider_chain(self, request: ChatCompletionRequest) -> List[str]:
         """Get ordered list of providers to try for this request."""
         
+        # 1. Handle requested_provider
+        if request.provider and request.provider in self.providers and self._is_provider_available(request.provider):
+            logger.debug(f"Using requested provider: {request.provider}")
+            # If a specific provider is requested and available, use only that.
+            # Consider if scoring should still apply or if it should be the sole choice.
+            # For now, let's assume it becomes the only candidate if specified.
+            # If scoring is desired, it would be `await self._score_providers([request.provider], request)`
+            return [request.provider]
+
         # Find matching routing rules
         matching_rules = self._find_matching_rules(request)
         
@@ -104,8 +113,8 @@ class ProviderRouter:
         
         # Filter to only available providers
         available_providers = [
-            provider for provider in provider_chain
-            if provider in self.providers and self._is_provider_available(provider)
+            p_name for p_name in provider_chain
+            if p_name in self.providers and self._is_provider_available(p_name)
         ]
         
         # Apply dynamic scoring to reorder providers
@@ -234,11 +243,40 @@ class ProviderRouter:
         # Model availability bonus
         suitable_models = self._count_suitable_models(provider_config, request)
         score += suitable_models * 5
-        
+
+        # Adjust score based on model_quality preference
+        if request.model_quality:
+            quality_bonus = 0
+            if request.model_quality == "fastest":
+                if provider_name in ["groq", "cerebras"]: # Known fast providers
+                    quality_bonus = 40
+                elif provider_name == "anthropic":
+                    # Check if Haiku is among the suitable/default models for this provider
+                    if any(m.name.startswith("claude-3-haiku") for m in provider_config.models):
+                         quality_bonus = 35 # Haiku is fast
+            elif request.model_quality == "best_quality":
+                if provider_name == "anthropic":
+                    if any(m.name.startswith("claude-3-opus") for m in provider_config.models):
+                        quality_bonus = 40 # Opus is high quality
+                    elif any(m.name.startswith("claude-3-sonnet") for m in provider_config.models):
+                        quality_bonus = 30 # Sonnet is good quality
+                elif provider_name == "openrouter":
+                     # Предположим, что не-бесплатные модели OpenRouter могут быть более качественными
+                    if not all(m.is_free for m in provider_config.models):
+                        quality_bonus = 25
+            elif request.model_quality == "balanced":
+                if provider_name == "anthropic":
+                    if any(m.name.startswith("claude-3-sonnet") for m in provider_config.models):
+                        quality_bonus = 20
+                # Other providers could have balanced scores too
+            score += quality_bonus
+            logger.debug(f"Quality bonus for {provider_name} ({request.model_quality}): {quality_bonus}")
+
         # Performance bonus (if we have metrics)
         if provider_name in self.provider_scores:
             score += self.provider_scores[provider_name]
         
+        logger.debug(f"Calculated score for provider {provider_name}: {score}")
         return score
     
     def _count_suitable_models(self, provider_config: ProviderConfig, request: ChatCompletionRequest) -> int:

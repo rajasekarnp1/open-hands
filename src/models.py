@@ -103,6 +103,7 @@ class ChatCompletionRequest(BaseModel):
     messages: List[ChatMessage]
     model: str = "auto"  # "auto" for automatic selection
     provider: Optional[str] = None  # Force specific provider
+    model_quality: Optional[str] = None # "fastest", "best_quality", "balanced"
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
@@ -186,3 +187,21 @@ class RequestLog(BaseModel):
     response_time: float
     status: str  # "success", "error", "rate_limited"
     error_message: Optional[str] = None
+
+
+# Agent-related Models
+class CodeAgentRequest(BaseModel):
+    instruction: str
+    context: Optional[str] = None  # For existing code or other context
+    language: Optional[str] = None  # e.g., "python", "javascript"
+    model_quality: Optional[str] = None # "fastest", "best_quality", "balanced"
+    provider: Optional[str] = None
+    # Potentially add other ChatCompletionRequest relevant params if needed by agent's LLM call
+
+
+class CodeAgentResponse(BaseModel):
+    generated_code: str
+    explanation: Optional[str] = None
+    # Potentially include original request details or model used for traceability
+    request_params: Optional[dict] = None
+    model_used: Optional[str] = None

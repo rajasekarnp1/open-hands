@@ -53,3 +53,6 @@ lxml>=4.9.0
 # Enhanced research features
 torch>=2.0.0
 numpy>=1.24.0
+
+# LLM Provider SDKs
+anthropic>=0.20.0

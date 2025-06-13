@@ -27,6 +27,7 @@ This will guide you through adding API keys for various providers like:
 - **OpenRouter** (50+ free models)
 - **Groq** (ultra-fast inference)
 - **Cerebras** (fast inference with 8K context)
+- **Anthropic** (Claude 3 models - BYOK)
 - **Together AI** (free tier + trial credits)
 - **Cohere** (Command models)
 
@@ -176,11 +177,40 @@ Request body:
     {"role": "user", "content": "Hello!"}
   ],
   "provider": "openrouter",  // Optional: force specific provider
+  "model_quality": "balanced", // Optional: "fastest", "best_quality", "balanced"
   "temperature": 0.7,
   "max_tokens": 1000,
   "stream": false
 }
 ```
+
+### Coding Agent Endpoint
+
+```
+POST /v1/agents/code/invoke
+```
+
+Request body (`CodeAgentRequest`):
+```json
+{
+  "instruction": "Create a Python function that returns the factorial of a number.",
+  "context": "def existing_function():\n  pass", // Optional
+  "language": "python", // Optional
+  "model_quality": "best_quality", // Optional
+  "provider": null // Optional
+}
+```
+
+Response body (`CodeAgentResponse`):
+```json
+{
+  "generated_code": "def factorial(n):\n    if n == 0:\n        return 1\n    else:\n        return n * factorial(n-1)",
+  "explanation": "This function calculates factorial recursively.",
+  "request_params": { /* ... original request ... */ },
+  "model_used": "anthropic/claude-3-opus-20240229" // Example
+}
+```
+
 
 ### List Models
 
@@ -365,3 +395,19 @@ For issues and questions:
 2. Verify provider status: `python cli.py status`
 3. Test individual providers manually
 4. Check the provider's documentation for API changes
+
+## VS Code Extension: OpenHands AI Assistant
+
+The OpenHands AI Assistant VS Code extension integrates the LLM Aggregator directly into your editor.
+
+### Key Features:
+- **Contextual Chat (`openhands.askOpenHands` command)**: Ask questions about your code. The extension sends your prompt, selected code, and active file content to the backend.
+- **Code Generation (`openhands.invokeCodeAgent` command)**: Generate new code or refactor existing code. The extension sends your instruction, selected code (as context), and detected language to the Code Agent endpoint. Generated code is inserted into the editor, and explanations are shown separately.
+
+### Setup (Development):
+1.  Navigate to `openhands-vscode-extension` directory.
+2.  Run `npm install` then `npm run compile`.
+3.  Open this directory in VS Code and run the "Run Extension" debug configuration (F5).
+4.  In the new Extension Development Host window, configure the `openhands.api.baseUrl` setting to point to your running LLM Aggregator backend (e.g., `http://localhost:8000`).
+
+For more details, see the "VS Code Extension" section in `README.md`.

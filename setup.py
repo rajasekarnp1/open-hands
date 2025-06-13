@@ -50,6 +50,11 @@ async def setup_credentials():
             "name": "Cohere",
             "signup_url": "https://cohere.com/",
             "description": "Command models with 1,000 requests/month free"
+        },
+        "anthropic": {
+            "name": "Anthropic",
+            "signup_url": "https://console.anthropic.com/",
+            "description": "Claude 3 models (Haiku, Sonnet, Opus)"
         }
     }
     

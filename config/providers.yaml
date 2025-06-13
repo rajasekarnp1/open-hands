@@ -28,6 +28,49 @@ providers:
         context_length: 131072
         is_free: true
 
+  # anthropic:
+  #   name: "anthropic"
+  #   display_name: "Anthropic"
+  #   provider_type: "commercial" # Or "enterprise" depending on your usage
+  #   # base_url: "https://api.anthropic.com" # Not strictly needed if SDK handles it
+  #   api_key_required: true
+  #   auth_header: "x-api-key"
+  #   auth_prefix: null # No prefix like "Bearer"
+  #   priority: 3 # Adjust as needed
+  #   rate_limit: # These are examples, refer to Anthropic's official limits
+  #     requests_per_minute: 100
+  #     # tokens_per_minute: 600000 # Example, check current limits
+  #     concurrent_requests: 10
+  #   models:
+  #     - name: "claude-3-haiku-20240307"
+  #       display_name: "Claude 3 Haiku"
+  #       capabilities: ["chat", "code_generation", "summarization"]
+  #       # context_length: 200000 # Refer to official documentation
+  #       # pricing: # Example, refer to official pricing
+  #       #   prompt_tokens_per_usd: 4000000 # $0.25/M input tokens
+  #       #   completion_tokens_per_usd: 1333333 # $0.75/M output tokens
+  #       is_free: false
+  #     - name: "claude-3-sonnet-20240229"
+  #       display_name: "Claude 3 Sonnet"
+  #       capabilities: ["chat", "code_generation", "summarization", "advanced_reasoning"]
+  #       # context_length: 200000
+  #       # pricing:
+  #       #   prompt_tokens_per_usd: 333333 # $3/M input tokens
+  #       #   completion_tokens_per_usd: 66666 # $15/M output tokens
+  #       is_free: false
+  #     - name: "claude-3-opus-20240229"
+  #       display_name: "Claude 3 Opus"
+  #       capabilities: ["chat", "code_generation", "summarization", "advanced_reasoning", "complex_tasks"]
+  #       # context_length: 200000
+  #       # pricing:
+  #       #   prompt_tokens_per_usd: 66666 # $15/M input tokens
+  #       #   completion_tokens_per_usd: 33333 # $75/M output tokens
+  #       is_free: false
+  #   default_model: "claude-3-haiku-20240307"
+  #   supports_streaming: true
+  #   supports_function_calling: false # As of last check, true function calling might be via tools beta
+  #   timeout: 60 # Seconds
+
   groq:
     name: "Groq"
     display_name: "Groq"
