@@ -15,9 +15,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uvicorn
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
+from src.config import settings # Centralized settings
 
 from ..models import (
     ChatCompletionRequest,
@@ -38,12 +36,11 @@ from ..providers.cerebras import create_cerebras_provider
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
-# Security configuration
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+# Security configuration using centralized settings
+# ADMIN_TOKEN and ALLOWED_ORIGINS are now accessed via settings object
 
-if not ADMIN_TOKEN:
-    logger.warning("ADMIN_TOKEN not set. Admin endpoints will be disabled.")
+if not settings.ADMIN_TOKEN:
+    logger.warning("ADMIN_TOKEN not set in environment or .env file. Admin endpoints will be disabled if called.")
 
 # Global aggregator instance
 aggregator: Optional[LLMAggregator] = None
@@ -107,7 +104,7 @@ app = FastAPI(
 # Add CORS middleware with security
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=settings.ALLOWED_ORIGINS, # Use settings
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
@@ -123,10 +120,11 @@ def get_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)) -
 
 async def verify_admin_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """Verify admin token for admin endpoints."""
-    if not ADMIN_TOKEN:
-        raise HTTPException(status_code=503, detail="Admin functionality disabled")
+    if not settings.ADMIN_TOKEN:
+        logger.error("Attempt to access admin endpoint, but ADMIN_TOKEN is not configured.")
+        raise HTTPException(status_code=503, detail="Admin functionality is not configured or disabled.")
     
-    if not credentials or credentials.credentials != ADMIN_TOKEN:
+    if not credentials or credentials.credentials != settings.ADMIN_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid admin token")
     
     return credentials.credentials
@@ -233,7 +231,8 @@ async def add_credentials(
     provider: str,
     account_id: str,
     api_key: str,
-    additional_headers: Optional[Dict[str, str]] = None
+    additional_headers: Optional[Dict[str, str]] = None,
+    _admin_token: str = Depends(verify_admin_token)
 ):
     """Add API credentials for a provider."""
     
@@ -260,7 +259,7 @@ async def add_credentials(
 
 
 @app.get("/admin/credentials")
-async def list_credentials():
+async def list_credentials(_admin_token: str = Depends(verify_admin_token)):
     """List all credentials (without sensitive data)."""
     
     if not aggregator:
@@ -276,7 +275,7 @@ async def list_credentials():
 
 
 @app.delete("/admin/credentials/{provider}/{account_id}")
-async def remove_credentials(provider: str, account_id: str):
+async def remove_credentials(provider: str, account_id: str, _admin_token: str = Depends(verify_admin_token)):
     """Remove credentials for a specific account."""
     
     if not aggregator:
@@ -298,7 +297,7 @@ async def remove_credentials(provider: str, account_id: str):
 
 
 @app.get("/admin/providers")
-async def get_provider_status():
+async def get_provider_status(_admin_token: str = Depends(verify_admin_token)):
     """Get status of all providers."""
     
     if not aggregator:
@@ -314,7 +313,7 @@ async def get_provider_status():
 
 
 @app.get("/admin/rate-limits")
-async def get_rate_limit_status(user_id: Optional[str] = Depends(get_user_id)):
+async def get_rate_limit_status(user_id: Optional[str] = Depends(get_user_id), _admin_token: str = Depends(verify_admin_token)):
     """Get rate limit status."""
     
     if not aggregator:
@@ -330,7 +329,7 @@ async def get_rate_limit_status(user_id: Optional[str] = Depends(get_user_id)):
 
 
 @app.get("/admin/usage-stats")
-async def get_usage_stats():
+async def get_usage_stats(_admin_token: str = Depends(verify_admin_token)):
     """Get usage statistics."""
     
     if not aggregator:
@@ -359,7 +358,7 @@ async def get_usage_stats():
 
 
 @app.post("/admin/rotate-credentials/{provider}")
-async def rotate_credentials(provider: str):
+async def rotate_credentials(provider: str, _admin_token: str = Depends(verify_admin_token)):
     """Rotate credentials for a provider."""
     
     if not aggregator:
@@ -386,9 +385,11 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, reload: bool = False):
         host=host,
         port=port,
         reload=reload,
-        log_level="info"
+        log_level=settings.LOG_LEVEL.lower() # Use settings for log level
     )
 
 
 if __name__ == "__main__":
+    # Basic logging configuration for startup messages
+    logging.basicConfig(level=settings.LOG_LEVEL.upper())
     run_server()

@@ -21,9 +21,10 @@ from ..providers.base import BaseProvider, ProviderError, RateLimitError, Authen
 from .account_manager import AccountManager
 from .router import ProviderRouter
 from .rate_limiter import RateLimiter
-from .meta_controller import MetaModelController, ModelCapabilityProfile, TaskComplexityAnalyzer
+from .meta_controller import MetaModelController, ModelCapabilityProfile # Removed TaskComplexityAnalyzer, not directly used here
 from .ensemble_system import EnsembleSystem
 from .auto_updater import AutoUpdater, integrate_auto_updater
+from src.config import settings # Centralized settings
 
 
 logger = logging.getLogger(__name__)
@@ -38,12 +39,12 @@ class LLMAggregator:
         account_manager: AccountManager,
         router: ProviderRouter,
         rate_limiter: RateLimiter,
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
+        max_retries: Optional[int] = None, # Will be sourced from settings
+        retry_delay: Optional[float] = None, # Will be sourced from settings
         enable_meta_controller: bool = True,
         enable_ensemble: bool = False,
         enable_auto_updater: bool = True,
-        auto_update_interval: int = 60  # minutes
+        auto_update_interval: Optional[int] = None # Will be sourced from settings
     ):
         self.providers = {provider.name: provider for provider in providers}
         self.account_manager = account_manager
@@ -54,8 +55,12 @@ class LLMAggregator:
         self.enable_meta_controller = enable_meta_controller
         self.enable_ensemble = enable_ensemble
         self.enable_auto_updater = enable_auto_updater
-        self.auto_update_interval = auto_update_interval
         
+        # Configuration from settings or defaults
+        self.max_retries = max_retries if max_retries is not None else settings.MAX_RETRIES
+        self.retry_delay = retry_delay if retry_delay is not None else settings.RETRY_DELAY
+        self.auto_update_interval = auto_update_interval if auto_update_interval is not None else settings.AUTO_UPDATE_INTERVAL_MINUTES
+
         # Initialize meta-controller if enabled
         if self.enable_meta_controller:
             self.meta_controller = self._initialize_meta_controller()
@@ -75,8 +80,6 @@ class LLMAggregator:
             asyncio.create_task(self._start_auto_updater())
         else:
             self.auto_updater = None
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
         
         logger.info(f"Initialized LLM Aggregator with {len(self.providers)} providers")
         logger.info(f"Meta-controller enabled: {self.enable_meta_controller}")
@@ -351,11 +354,13 @@ class LLMAggregator:
                 await self.meta_controller.update_performance_feedback(
                     model_name, request, False, response_time, None
                 )
+                if provider_name: # Ensure provider_name was found
+                    self.router.update_provider_score(provider_name, success=False, model_name=model_name)
                 last_error = e
                 continue
         
         # If all models in cascade failed, fallback to traditional routing
-        logger.warning("Meta-controller cascade failed, falling back to traditional routing")
+        logger.warning(f"Meta-controller cascade failed. Last error: {last_error}. Falling back to traditional routing.")
         return await self._chat_completion_traditional(request, user_id)
     
     async def _chat_completion_with_ensemble(
@@ -570,15 +575,22 @@ class LLMAggregator:
                 
             except RateLimitError:
                 # Don't retry rate limit errors
+                logger.warning(f"RateLimitError with {provider_name} for model {model_name}. Not retrying.")
                 raise
                 
             except ProviderError as e:
+                logger.warning(f"ProviderError with {provider_name} for model {model_name} (attempt {attempt + 1}/{self.max_retries}): {e}")
                 if attempt == self.max_retries - 1:
                     raise
-                
-                # Wait before retry
                 await asyncio.sleep(self.retry_delay * (2 ** attempt))
-                logger.info(f"Retrying {provider_name} (attempt {attempt + 2}/{self.max_retries})")
+                logger.info(f"Retrying {provider_name} (attempt {attempt + 2}/{self.max_retries}) for model {model_name}")
+            except Exception as e:
+                logger.error(f"Unexpected error with {provider_name} for model {model_name} (attempt {attempt + 1}/{self.max_retries}): {e}", exc_info=True)
+                if attempt == self.max_retries - 1:
+                    # Raise as ProviderError to ensure consistent error type from this function
+                    raise ProviderError(f"Unexpected error with {provider_name} after {self.max_retries} attempts: {e}")
+                await asyncio.sleep(self.retry_delay * (2 ** attempt))
+                logger.info(f"Retrying {provider_name} (attempt {attempt + 2}/{self.max_retries}) for model {model_name} after unexpected error.")
         
         return None
     
@@ -612,11 +624,22 @@ class LLMAggregator:
         resolved_request.model = model_name
         
         # Stream response
-        async for chunk in provider.chat_completion_stream(resolved_request, credentials):
-            yield chunk
-        
-        # Update credentials usage
-        await self.account_manager.update_usage(credentials)
+        try:
+            async for chunk in provider.chat_completion_stream(resolved_request, credentials):
+                yield chunk
+
+            # Update credentials usage
+            await self.account_manager.update_usage(credentials)
+        except RateLimitError as e:
+            logger.warning(f"RateLimitError during stream with {provider_name} for model {model_name}: {e}")
+            raise  # Propagate to be handled by the caller
+        except ProviderError as e:
+            logger.warning(f"ProviderError during stream with {provider_name} for model {model_name}: {e}")
+            raise # Propagate to be handled by the caller
+        except Exception as e:
+            logger.error(f"Unexpected error during stream with {provider_name} for model {model_name}: {e}", exc_info=True)
+            # Wrap unexpected errors in ProviderError for consistent error handling
+            raise ProviderError(f"Unexpected error during stream with {provider_name} for model {model_name}: {e}")
     
     async def _select_model(
         self,
