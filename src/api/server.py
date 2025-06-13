@@ -9,6 +9,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
+from pathlib import Path # New import for project_directory validation
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -295,6 +296,32 @@ async def code_agent_invoke(
     """Endpoint to invoke the CodeAgent."""
     if not code_agent_instance:
         raise HTTPException(status_code=503, detail="CodeAgent not ready")
+
+    # Validate project_directory if provided
+    if request.project_directory:
+        logger.info(f"Received request for CodeAgent with project_directory: {request.project_directory}")
+        try:
+            # Security: Resolve the path to prevent certain types of manipulation,
+            # though _resolve_safe_path in the tool itself is the primary defense.
+            path_obj = Path(request.project_directory).resolve()
+            if not path_obj.exists():
+                logger.warning(f"Project directory '{request.project_directory}' (resolved: '{path_obj}') does not exist.")
+                raise HTTPException(status_code=400, detail=f"Project directory '{request.project_directory}' does not exist.")
+            if not path_obj.is_dir():
+                logger.warning(f"Project directory '{request.project_directory}' (resolved: '{path_obj}') is not a directory.")
+                raise HTTPException(status_code=400, detail=f"Project directory '{request.project_directory}' is not a directory.")
+
+            # Update request.project_directory to the resolved, absolute path for consistency downstream
+            # This ensures that the agent and tools always work with a verified absolute path.
+            request.project_directory = str(path_obj)
+            logger.info(f"Validated project_directory: {request.project_directory}")
+
+        except SecurityException as se: # Assuming Path.resolve() might raise SecurityException for some odd paths
+            logger.error(f"Security exception resolving project directory '{request.project_directory}': {se}")
+            raise HTTPException(status_code=400, detail=f"Invalid project directory path (security concern): {request.project_directory}")
+        except Exception as path_e: # Catch other potential path errors during validation
+            logger.error(f"Error validating project directory '{request.project_directory}': {path_e}")
+            raise HTTPException(status_code=400, detail=f"Error validating project directory: {str(path_e)}")
 
     try:
         response = await code_agent_instance.generate_code(request)

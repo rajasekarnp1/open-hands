@@ -196,10 +196,16 @@ Request body (`CodeAgentRequest`):
   "instruction": "Create a Python function that returns the factorial of a number.",
   "context": "def existing_function():\n  pass", // Optional
   "language": "python", // Optional
+  "project_directory": "/path/to/user/project", // Optional: Enables filesystem tools if provided
   "model_quality": "best_quality", // Optional
   "provider": null // Optional
 }
 ```
+
+If `project_directory` is provided, the agent can use sandboxed filesystem tools:
+- `read_file(filepath: str)`: Reads a file relative to `project_directory`.
+- `write_file(filepath: str, content: str)`: Writes a file relative to `project_directory`.
+- `list_files(directory_path: str = "")`: Lists files/subdirectories relative to `project_directory`.
 
 Response body (`CodeAgentResponse`):
 ```json
@@ -402,7 +408,7 @@ The OpenHands AI Assistant VS Code extension integrates the LLM Aggregator direc
 
 ### Key Features:
 - **Contextual Chat (`openhands.askOpenHands` command)**: Ask questions about your code. The extension sends your prompt, selected code, and active file content to the backend.
-- **Code Generation (`openhands.invokeCodeAgent` command)**: Generate new code or refactor existing code. The extension sends your instruction, selected code (as context), and detected language to the Code Agent endpoint. Generated code is inserted into the editor, and explanations are shown separately.
+- **Code Generation (`openhands.invokeCodeAgent` command)**: Generate new code or refactor existing code. If a workspace is open, its path is sent as `project_directory`, enabling the agent to use filesystem tools (e.g., "Read 'src/main.py' and add comments to the main function."). Generated code is inserted into the editor, and explanations are shown separately.
 
 ### Setup (Development):
 1.  Navigate to `openhands-vscode-extension` directory.

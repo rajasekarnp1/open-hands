@@ -194,6 +194,7 @@ class CodeAgentRequest(BaseModel):
     instruction: str
     context: Optional[str] = None  # For existing code or other context
     language: Optional[str] = None  # e.g., "python", "javascript"
+    project_directory: Optional[str] = None # Base directory for filesystem tools
     model_quality: Optional[str] = None # "fastest", "best_quality", "balanced"
     provider: Optional[str] = None
     # Potentially add other ChatCompletionRequest relevant params if needed by agent's LLM call

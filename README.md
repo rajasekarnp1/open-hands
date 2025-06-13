@@ -199,10 +199,21 @@ This endpoint provides access to a specialized agent for code generation tasks.
   "instruction": "Create a Python function that returns the factorial of a number.",
   "context": "def existing_function():\n  pass", // Optional: existing code or context
   "language": "python", // Optional: "python", "javascript", etc.
+  "project_directory": "/path/to/user/project", // Optional: Enables filesystem tools if provided
   "model_quality": "best_quality", // Optional
   "provider": null // Optional
 }
 ```
+
+The `project_directory` field is crucial for enabling the agent's file system capabilities. If provided, the agent can read, write, and list files within this directory (sandboxed).
+
+**Agent's Filesystem Tools (when `project_directory` is provided):**
+The agent can utilize the following tools by generating a specific JSON request in its response. The backend executes the tool and returns the output to the agent.
+*   `read_file(filepath: str) -> str`: Reads the content of the specified file. `filepath` must be relative to the `project_directory`.
+*   `write_file(filepath: str, content: str) -> str`: Writes `content` to the specified file. `filepath` must be relative. Creates parent directories if needed. Overwrites existing files.
+*   `list_files(directory_path: str = "") -> list[str] | str`: Lists files and subdirectories within the given `directory_path` (relative to `project_directory`). Defaults to listing the root of `project_directory`. Returns a list of names, with directories ending in `/`.
+
+All file operations are sandboxed to the provided `project_directory` for security.
 
 **Example Response (`CodeAgentResponse`):**
 ```json
@@ -272,7 +283,8 @@ Currently, the extension is under development. To use it:
      3. Type "Ask OpenHands Code Agent" and select the command.
      4. Enter your instruction for the code agent (e.g., "Create a Python class for a User", "Refactor this selected Java code to use streams").
    - **Functionality**:
-     *   The extension sends your instruction, selected code (as context), and the detected language of the active file to the `/v1/agents/code/invoke` endpoint.
+     *   The extension sends your instruction, selected code (as context), the detected language of the active file, and the **current VS Code workspace root path (if a workspace is open) as `project_directory`** to the `/v1/agents/code/invoke` endpoint.
+     *   If a `project_directory` is sent, the Code Agent can use filesystem tools (read, write, list files) to fulfill your request. For example, "Read 'src/utils.py' and then create a new file 'src/importer.py' that uses functions from utils."
      *   The `generated_code` from the response is inserted directly into your editor:
          - If you had text selected, it replaces the selection.
          - If no text was selected, it inserts the code at your cursor position.

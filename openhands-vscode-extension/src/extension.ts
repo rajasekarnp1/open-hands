@@ -155,6 +155,16 @@ export function activate(context: vscode.ExtensionContext) {
             language = editor.document.languageId;
         }
 
+        // Get workspace root
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        let projectDirectory: string | undefined = undefined;
+        if (workspaceFolders && workspaceFolders.length > 0) {
+            projectDirectory = workspaceFolders[0].uri.fsPath;
+            vscode.window.showInformationMessage(`OpenHands Agent using project context: ${projectDirectory}`);
+        } else {
+            vscode.window.showWarningMessage("No workspace folder open. File system tools will be unavailable for the agent.");
+        }
+
         const config = vscode.workspace.getConfiguration('openhands.api');
         const baseUrl = config.get<string>('baseUrl', 'http://localhost:8000');
         const apiUrl = `${baseUrl}/v1/agents/code/invoke`;
@@ -171,6 +181,7 @@ export function activate(context: vscode.ExtensionContext) {
                     instruction: userInstruction,
                     context: selectedText || null,
                     language: language,
+                    project_directory: projectDirectory, // Pass the determined project directory
                     model_quality: "best_quality", // Default to best for code agent
                     provider: null
                 };
