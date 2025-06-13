@@ -19,6 +19,7 @@ passlib[bcrypt]==1.7.4
 
 # Configuration and environment
 python-dotenv==1.0.0
+pydantic-settings==2.1.0 # Added for centralized settings management
 pyyaml==6.0.1
 click==8.1.7
 

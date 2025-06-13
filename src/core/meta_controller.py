@@ -18,6 +18,8 @@ from collections import defaultdict
 import sqlite3
 import pickle
 
+from src.config import settings # Centralized settings
+
 # Optional PyTorch import
 try:
     import torch
@@ -450,7 +452,8 @@ class MetaModelController:
         self.model_profiles = model_profiles
         
         if self.ml_enabled:
-            self.memory_system = ExternalMemorySystem()
+            # Use DATABASE_URL from settings for ExternalMemorySystem
+            self.memory_system = ExternalMemorySystem(db_path=settings.DATABASE_URL)
             self.complexity_analyzer = TaskComplexityAnalyzer()
             self.cascade_router = FrugalCascadeRouter(model_profiles)
         else:
@@ -463,9 +466,9 @@ class MetaModelController:
         self.performance_history = defaultdict(list)
         self.user_preferences = defaultdict(dict)
         
-        # Learning parameters
-        self.learning_rate = 0.1
-        self.exploration_rate = 0.1
+        # Learning parameters from settings
+        self.learning_rate = settings.META_CONTROLLER_LEARNING_RATE
+        self.exploration_rate = settings.META_CONTROLLER_EXPLORATION_RATE
     
     async def select_optimal_model(self, request: ChatCompletionRequest, 
                                  user_id: Optional[str] = None) -> Tuple[str, float]:
@@ -530,6 +533,17 @@ class MetaModelController:
     
     async def get_cascade_chain(self, request: ChatCompletionRequest) -> List[str]:
         """Get the full cascade chain for a request."""
+        if not self.ml_enabled:
+            # Fallback: return a list containing only the "auto" selection,
+            # or the first model if available, similar to _fallback_model_selection logic.
+            # For simplicity, returning a generic or empty list might be safer.
+            # Or, delegate to a simplified version of cascade logic if desired.
+            # Here, we'll return a list that implies default/auto behavior.
+            # Consider what the calling code expects in a non-ML scenario.
+            # Returning the result of _fallback_model_selection's model might be one option.
+            selected_model, _ = self._fallback_model_selection(request)
+            return [selected_model]
+
         task_complexity = self.complexity_analyzer.analyze_task_complexity(request)
         return self.cascade_router.get_cascade_chain(task_complexity)
     
@@ -538,6 +552,12 @@ class MetaModelController:
                                         user_satisfaction: Optional[float] = None):
         """Update performance feedback for continuous learning."""
         
+        if not self.ml_enabled:
+            # If ML features are disabled, no complex feedback mechanism is in place.
+            # We could potentially update basic stats if model_profiles had them directly
+            # and weren't tied to ML-only structures, but current design ties feedback to ML parts.
+            return
+
         task_complexity = self.complexity_analyzer.analyze_task_complexity(request)
         task_type = self._classify_task_type(request)
         task_hash = self._generate_task_hash(request)
