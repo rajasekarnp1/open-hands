@@ -196,26 +196,45 @@ Request body (`CodeAgentRequest`):
   "instruction": "Create a Python function that returns the factorial of a number.",
   "context": "def existing_function():\n  pass", // Optional
   "language": "python", // Optional
-  "project_directory": "/path/to/user/project", // Optional: Enables filesystem tools if provided
+  "project_directory": "/path/to/user/project", // Optional: Enables filesystem tools
+  "thread_id": "thread_abc123", // Optional: For stateful, multi-turn conversations
   "model_quality": "best_quality", // Optional
   "provider": null // Optional
 }
 ```
 
-If `project_directory` is provided, the agent can use sandboxed filesystem tools:
-- `read_file(filepath: str)`: Reads a file relative to `project_directory`.
-- `write_file(filepath: str, content: str)`: Writes a file relative to `project_directory`.
-- `list_files(directory_path: str = "")`: Lists files/subdirectories relative to `project_directory`.
+If `project_directory` is provided, the agent can use sandboxed filesystem tools (`read_file`, `write_file`, `list_files`). See `README.md` for tool details.
 
 Response body (`CodeAgentResponse`):
 ```json
 {
-  "generated_code": "def factorial(n):\n    if n == 0:\n        return 1\n    else:\n        return n * factorial(n-1)",
-  "explanation": "This function calculates factorial recursively.",
-  "request_params": { /* ... original request ... */ },
-  "model_used": "anthropic/claude-3-opus-20240229" // Example
+  "generated_code": "def factorial(n): ...", // Can be null if agent pauses or errors
+  "explanation": "This function calculates...",
+  "agent_status": "completed", // e.g., "completed", "requires_human_input", "error"
+  "human_input_request": null, // Populated if agent_status is "requires_human_input"
+                               // e.g., {"tool_call_id": "call_id_123", "question_for_human": "Proceed?"}
+  "request_params": { /* original request parameters */ },
+  "model_used": "anthropic/claude-3-opus-20240229", // Example
+  "error_details": null // Populated if agent_status is "error"
 }
 ```
+
+### Resume Agent Execution Endpoint
+
+```
+POST /v1/agents/resume
+```
+Used to resume an agent after it has paused for human input (indicated by `agent_status="requires_human_input"` from the `/v1/agents/code/invoke` endpoint).
+
+Request body (`ResumeAgentRequest`):
+```json
+{
+  "thread_id": "thread_abc123", // The ID of the conversation to resume
+  "tool_call_id": "call_id_123", // The tool_call_id from the HumanInputRequest
+  "human_response": "Yes, proceed with the action." // The user's response
+}
+```
+The response is a standard `CodeAgentResponse` reflecting the agent's subsequent actions.
 
 
 ### List Models
@@ -247,6 +266,16 @@ GET /admin/providers
 ```
 GET /admin/usage-stats
 ```
+
+## Advanced Agent Features
+
+The OpenHands Code Agent has several advanced capabilities:
+
+-   **Standardized Tools**: Agents can use tools (like filesystem operations) defined via the `@openhands_tool` decorator and managed by a central `ToolRegistry`. Tool parameters are validated before execution.
+-   **Stateful Conversations (Checkpointing)**: By providing a `thread_id` in your `CodeAgentRequest`, the agent can maintain conversation history and state across multiple API calls. Currently, an in-memory checkpoint manager is used (state persists for server lifetime).
+-   **Human-in-the-Loop (HITL)**: The agent can pause its execution and request human input using the `ask_human_for_input` tool. The API client can then provide the human's response via the `/v1/agents/resume` endpoint to continue the agent's task.
+
+For more detailed explanations of these features, please refer to the main `README.md` file.
 
 ## Configuration
 

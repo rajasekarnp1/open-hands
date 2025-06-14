@@ -195,14 +195,34 @@ class CodeAgentRequest(BaseModel):
     context: Optional[str] = None  # For existing code or other context
     language: Optional[str] = None  # e.g., "python", "javascript"
     project_directory: Optional[str] = None # Base directory for filesystem tools
+    thread_id: Optional[str] = None # For stateful conversations / checkpointing
     model_quality: Optional[str] = None # "fastest", "best_quality", "balanced"
     provider: Optional[str] = None
     # Potentially add other ChatCompletionRequest relevant params if needed by agent's LLM call
 
 
+class HumanInputRequest(BaseModel):
+    """Details required when an agent pauses for human input."""
+    tool_call_id: str # The ID of the 'ask_human_for_input' tool call that triggered this
+    question_for_human: str
+
 class CodeAgentResponse(BaseModel):
-    generated_code: str
+    generated_code: Optional[str] = None # Can be None if agent pauses or errors before generating code
     explanation: Optional[str] = None
+    agent_status: str # e.g., "completed", "requires_human_input", "error", "running_tool"
+    human_input_request: Optional[HumanInputRequest] = None
     # Potentially include original request details or model used for traceability
     request_params: Optional[dict] = None
     model_used: Optional[str] = None
+    error_details: Optional[str] = None # For agent_status="error"
+
+class ResumeAgentRequest(BaseModel):
+    """Request model for resuming an agent's execution after human input."""
+    thread_id: str # The conversation/session thread to resume
+    tool_call_id: str # The ID of the 'ask_human_for_input' tool call that was answered
+    human_response: str # The textual response from the human
+    # The original CodeAgentRequest parameters might not all be needed,
+    # as the agent should pick up most context from the loaded SessionState.
+    # However, if some original request params need to be accessible, they could be re-added here
+    # or fetched from a stored version of the original request if necessary.
+    # For now, assume the agent uses the history and its stored state primarily.

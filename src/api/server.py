@@ -25,19 +25,19 @@ from ..models import (
     AccountCredentials,
     ProviderConfig,
     SystemConfig,
-    CodeAgentRequest, # New import
-    CodeAgentResponse # New import
+    CodeAgentRequest,
+    CodeAgentResponse,
+    ResumeAgentRequest # New import
 )
 from pydantic import BaseModel
 
 from ..core.aggregator import LLMAggregator
-from ..agents.code_agent import CodeAgent # New import
+from ..agents.code_agent import CodeAgent
+from ..agents.checkpoint import InMemoryCheckpointManager, BaseCheckpointManager # New imports
 from ..core.account_manager import AccountManager
 from ..core.router import ProviderRouter
 from ..core.rate_limiter import RateLimiter, RateLimitExceeded
-from ..providers.openrouter import create_openrouter_provider
-from ..providers.groq import create_groq_provider
-from ..providers.cerebras import create_cerebras_provider
+# Specific provider imports are now within lifespan or not needed at top level if dynamically loaded
 
 
 logger = logging.getLogger(__name__)
@@ -50,67 +50,63 @@ if not settings.ADMIN_TOKEN:
     logger.warning("ADMIN_TOKEN not set in environment or .env file. Admin endpoints will be disabled if called.")
 
 # Global instances
-aggregator: Optional[LLMAggregator] = None
+aggregator_instance: Optional[LLMAggregator] = None # Renamed for clarity
 code_agent_instance: Optional[CodeAgent] = None
+checkpoint_manager_instance: Optional[BaseCheckpointManager] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global aggregator, code_agent_instance
+    global aggregator_instance, code_agent_instance, checkpoint_manager_instance
     
-    # Startup
-    logger.info("Starting LLM API Aggregator and Agents...")
+    logger.info("Starting application lifespan...")
     
     # Initialize components
-    account_manager = AccountManager() # Consider making this part of settings or a singleton
+    account_manager = AccountManager()
     rate_limiter = RateLimiter()
-    
-    # Create providers
-    # TODO: Dynamically discover and load providers based on config
+    checkpoint_manager_instance = InMemoryCheckpointManager() # Create checkpoint manager instance
+
+    # Dynamically load providers (conceptual example, actual loading might be more complex)
+    # This part should ideally discover all provider modules in src/providers/
+    # and call their respective create_<provider_name>_provider functions.
     providers_list = []
+    provider_names = ["openrouter", "groq", "cerebras", "anthropic"] # Example list
+    for name in provider_names:
+        try:
+            module = __import__(f"src.providers.{name}", fromlist=[f"create_{name}_provider"])
+            create_func = getattr(module, f"create_{name}_provider")
+            providers_list.append(create_func([])) # Initialize with empty credentials
+        except (ImportError, AttributeError) as e:
+            logger.error(f"Failed to load provider {name}: {e}")
 
-    # Initialize providers with empty credentials (will be populated by AccountManager)
-    from ..providers.openrouter import create_openrouter_provider
-    from ..providers.groq import create_groq_provider
-    from ..providers.cerebras import create_cerebras_provider
-    # Import Anthropic provider factory function
-    from ..providers.anthropic import create_anthropic_provider
+    if not providers_list:
+        logger.warning("No providers were loaded. LLM Aggregator might not function correctly.")
 
-    providers_list.append(create_openrouter_provider([]))
-    providers_list.append(create_groq_provider([]))
-    providers_list.append(create_cerebras_provider([]))
-    providers_list.append(create_anthropic_provider([])) # Add Anthropic
-
-    # Create provider configs dict for the router
-    # Assuming provider config is loaded from a central place or default is used.
-    # For now, router might rely on default configs within each provider if not overridden.
     provider_configs = {provider.name: provider.config for provider in providers_list}
-    
-    # Initialize router
-    router = ProviderRouter(provider_configs) # router needs provider configurations
-    
-    # Initialize aggregator
-    aggregator = LLMAggregator(
+    router = ProviderRouter(provider_configs=provider_configs) # Pass configs correctly
+
+    aggregator_instance = LLMAggregator(
         providers=providers_list,
         account_manager=account_manager,
         router=router,
         rate_limiter=rate_limiter
     )
 
-    # Initialize CodeAgent
-    code_agent_instance = CodeAgent(llm_aggregator=aggregator)
+    # Initialize CodeAgent with the aggregator and checkpoint manager
+    code_agent_instance = CodeAgent(
+        llm_aggregator=aggregator_instance,
+        checkpoint_manager=checkpoint_manager_instance
+    )
     
-    logger.info("LLM API Aggregator and Agents started successfully")
+    logger.info("LLM API Aggregator and Agents initialized successfully.")
     
     yield
     
-    # Shutdown
-    logger.info("Shutting down LLM API Aggregator and Agents...")
-    if aggregator:
-        await aggregator.close()
-    # No specific close needed for CodeAgent unless it holds resources
-    logger.info("LLM API Aggregator and Agents shut down")
+    logger.info("Shutting down application lifespan...")
+    if aggregator_instance:
+        await aggregator_instance.close()
+    logger.info("Application shut down successfully.")
 
 
 # Create FastAPI app
@@ -183,25 +179,23 @@ async def chat_completions(
 ):
     """OpenAI-compatible chat completions endpoint."""
     
-    if not aggregator:
+    if not aggregator_instance: # Use updated global name
         raise HTTPException(status_code=503, detail="Service not ready")
     
     try:
         if request.stream:
-            # Return streaming response
             async def generate():
-                async for chunk in aggregator.chat_completion_stream(request, user_id):
+                async for chunk in aggregator_instance.chat_completion_stream(request, user_id): # Use updated global name
                     yield f"data: {chunk.json()}\n\n"
                 yield "data: [DONE]\n\n"
             
             return StreamingResponse(
                 generate(),
-                media_type="text/plain",
+                media_type="text/event-stream", # Changed to text/event-stream from text/plain
                 headers={"Cache-Control": "no-cache"}
             )
         else:
-            # Return regular response
-            response = await aggregator.chat_completion(request, user_id)
+            response = await aggregator_instance.chat_completion(request, user_id) # Use updated global name
             return response
             
     except RateLimitExceeded as e:
@@ -236,7 +230,7 @@ async def contextual_chat_completions(
 ):
     """Endpoint for contextual chat, combining prompt with editor context."""
 
-    if not aggregator:
+    if not aggregator_instance: # Use updated global name
         raise HTTPException(status_code=503, detail="Service not ready")
 
     full_prompt = f"{request.prompt}"
@@ -268,17 +262,17 @@ async def contextual_chat_completions(
     try:
         if chat_request.stream:
             async def generate_stream():
-                async for chunk in aggregator.chat_completion_stream(chat_request, user_id):
+                async for chunk in aggregator_instance.chat_completion_stream(chat_request, user_id): # Use updated global name
                     yield f"data: {chunk.json()}\n\n"
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(
                 generate_stream(),
-                media_type="text/event-stream", # Correct media type for SSE
+                media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache"}
             )
         else:
-            response = await aggregator.chat_completion(chat_request, user_id)
+            response = await aggregator_instance.chat_completion(chat_request, user_id) # Use updated global name
             return response
 
     except RateLimitExceeded as e:
@@ -328,6 +322,81 @@ async def code_agent_invoke(
         return response
     except Exception as e:
         logger.error(f"CodeAgent invocation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/agents/resume", response_model=CodeAgentResponse)
+async def resume_agent_execution(
+    resume_request: ResumeAgentRequest,
+    user_id: Optional[str] = Depends(get_user_id) # For consistency and potential future use
+):
+    """Endpoint to resume CodeAgent execution after human input."""
+    if not code_agent_instance or not checkpoint_manager_instance:
+        logger.error("CodeAgent or CheckpointManager not initialized for resume.")
+        raise HTTPException(status_code=503, detail="Agent components not ready.")
+
+    logger.info(f"Resuming agent for thread_id: {resume_request.thread_id}, tool_call_id: {resume_request.tool_call_id}")
+
+    # 1. Load state
+    current_session_state = await checkpoint_manager_instance.load_state(resume_request.thread_id)
+    if not current_session_state:
+        logger.warning(f"No session state found for thread_id: {resume_request.thread_id} on resume.")
+        raise HTTPException(status_code=404, detail=f"No session state found for thread_id: {resume_request.thread_id}")
+
+    # 2. Add human response as a "tool" message to history
+    # The 'name' should match the tool that asked for human input, typically 'ask_human_for_input'.
+    # The 'tool_call_id' must match the ID of the tool call that was interrupted.
+    current_session_state.add_message(
+        role="tool",
+        name="ask_human_for_input", # Assuming this was the tool name that paused
+        content=resume_request.human_response,
+        tool_call_id=resume_request.tool_call_id
+    )
+
+    # 3. Save updated state
+    await checkpoint_manager_instance.save_state(resume_request.thread_id, current_session_state)
+
+    # 4. Re-construct the original CodeAgentRequest parameters for the agent to continue
+    # The agent's generate_code method will load the state (including the new human response)
+    # and continue the loop. The original instruction is already part of the history.
+    # We need to provide other parameters like project_directory, model_quality, etc.
+    # These are now stored in current_session_state.original_request_info.
+
+    if not current_session_state.original_request_info:
+        logger.error(f"Original request info not found in session state for thread_id: {resume_request.thread_id}")
+        raise HTTPException(status_code=500, detail="Internal error: Missing original request info for resumption.")
+
+    # Create a new CodeAgentRequest for the resumption call.
+    # The 'instruction' and 'context' are not strictly needed here as the conversation
+    # history drives the resumption, but they are required fields in CodeAgentRequest.
+    # We can use placeholders or retrieve them if stored separately (currently not).
+    # For now, the agent's _construct_initial_user_message_content is only called for new threads.
+    # When resuming, it adds the *new user message* which isn't what we want here.
+    # The generate_code method needs to be robust to being called with a history
+    # that already includes the initial user instruction.
+
+    # The most important part is the thread_id and other parameters that affect agent execution.
+    # The `instruction` in this resumed request will be added to history by `generate_code`
+    # if `is_new_thread` is true, which it won't be here. So we can pass a generic one.
+    # The `code_agent.generate_code` will load the history which now includes the human's answer.
+
+    original_params = current_session_state.original_request_info
+    resumed_agent_request = CodeAgentRequest(
+        instruction="Continue based on human feedback.", # This instruction is for this specific call, history is main driver
+        project_directory=original_params.get("project_directory"),
+        thread_id=resume_request.thread_id,
+        model_quality=original_params.get("model_quality"),
+        provider=original_params.get("provider"),
+        language=original_params.get("language") # Ensure language is also carried over if set
+        # Other fields from original_request_info could be added here too
+    )
+
+    logger.debug(f"Calling generate_code for resumption with request: {resumed_agent_request.model_dump(exclude_none=True)}")
+    try:
+        # The agent will load the state (which includes the new human response) and continue.
+        response = await code_agent_instance.generate_code(resumed_agent_request)
+        return response
+    except Exception as e:
+        logger.error(f"CodeAgent resumption error for thread_id {resume_request.thread_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

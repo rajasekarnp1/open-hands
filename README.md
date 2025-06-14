@@ -200,34 +200,31 @@ This endpoint provides access to a specialized agent for code generation tasks.
   "context": "def existing_function():\n  pass", // Optional: existing code or context
   "language": "python", // Optional: "python", "javascript", etc.
   "project_directory": "/path/to/user/project", // Optional: Enables filesystem tools if provided
+  "project_directory": "/path/to/user/project", // Optional: Enables filesystem tools
+  "thread_id": "thread_abc123", // Optional: For stateful, multi-turn conversations
   "model_quality": "best_quality", // Optional
   "provider": null // Optional
 }
 ```
-
-The `project_directory` field is crucial for enabling the agent's file system capabilities. If provided, the agent can read, write, and list files within this directory (sandboxed).
-
-**Agent's Filesystem Tools (when `project_directory` is provided):**
-The agent can utilize the following tools by generating a specific JSON request in its response. The backend executes the tool and returns the output to the agent.
-*   `read_file(filepath: str) -> str`: Reads the content of the specified file. `filepath` must be relative to the `project_directory`.
-*   `write_file(filepath: str, content: str) -> str`: Writes `content` to the specified file. `filepath` must be relative. Creates parent directories if needed. Overwrites existing files.
-*   `list_files(directory_path: str = "") -> list[str] | str`: Lists files and subdirectories within the given `directory_path` (relative to `project_directory`). Defaults to listing the root of `project_directory`. Returns a list of names, with directories ending in `/`.
-
-All file operations are sandboxed to the provided `project_directory` for security.
 
 **Example Response (`CodeAgentResponse`):**
 ```json
 {
   "generated_code": "def factorial(n):\n    if n == 0:\n        return 1\n    else:\n        return n * factorial(n-1)",
   "explanation": "This function calculates factorial recursively. The base case is n=0, where factorial is 1.",
-  "request_params": {
-    "instruction": "Create a Python function that returns the factorial of a number.",
-    "context": "def existing_function():\n  pass",
-    "language": "python",
-    "model_quality": "best_quality",
-    "provider": null
-  },
-  "model_used": "anthropic/claude-3-opus-20240229" // Example
+  "agent_status": "completed", // or "requires_human_input", "error"
+  "human_input_request": null, // Or details if agent_status is "requires_human_input"
+  "request_params": { /* original request parameters */ },
+  "model_used": "anthropic/claude-3-opus-20240229", // Example
+  "error_details": null // Or error message if agent_status is "error"
+}
+```
+
+If `agent_status` is `"requires_human_input"`, the `human_input_request` field will contain:
+```json
+{
+  "tool_call_id": "tool_call_xyz789", // ID of the ask_human_for_input tool call
+  "question_for_human": "Should I proceed with deleting the old file after refactoring?"
 }
 ```
 
@@ -241,6 +238,90 @@ curl -X POST http://localhost:8000/v1/agents/code/invoke \
     "model_quality": "best_quality"
   }'
 ```
+
+### Resume Agent Execution
+
+Endpoint: `POST /v1/agents/resume`
+
+Used to resume an agent's operation after it has paused for human input (i.e., when a previous call to `/v1/agents/code/invoke` returned `agent_status="requires_human_input"`).
+
+**Request Body (`ResumeAgentRequest`):**
+```json
+{
+  "thread_id": "thread_abc123", // The ID of the conversation thread to resume
+  "tool_call_id": "tool_call_xyz789", // The ID from the HumanInputRequest
+  "human_response": "Yes, please proceed with deleting the old file." // User's answer
+}
+```
+
+**Response:** The response will be a standard `CodeAgentResponse`, reflecting the agent's state after processing the human input and continuing its operation (it might complete, error out, or even ask for human input again).
+
+
+## Agent Capabilities
+
+The OpenHands agent framework includes several advanced features:
+
+### 1. Standardized Tool Definition & Usage
+Agents can be equipped with tools to interact with external environments (like a file system).
+- **Tool Definition**: Tools are defined as Python functions and decorated with `@openhands_tool` (from `src.agents.tools.base`). This decorator inspects the function's signature and docstring to create a structured `ToolDefinition` (including name, description, and parameter schemas).
+- **Tool Registry**: A `global_tool_registry` (instance of `ToolRegistry` from `src.agents.tools.registry`) stores all defined tools. Agents use this registry to:
+    - Discover available tools and their schemas to present to the LLM.
+    - Retrieve the actual tool function for execution based on the LLM's request.
+- **Parameter Validation**: When an LLM requests a tool call, the provided parameters are validated against the tool's schema before execution. If validation fails, an error is returned to the LLM, allowing it to correct the parameters.
+- **Filesystem Tools**: Pre-built tools like `read_file`, `write_file`, and `list_files` are available. These tools operate securely within a specified `project_directory`.
+    - `read_file(filepath: str)`: Reads content of a relative path.
+    - `write_file(filepath: str, content: str)`: Writes content to a relative path.
+    - `list_files(directory_path: str = "")`: Lists files/subdirectories at a relative path.
+
+### 2. Stateful Agents & Checkpointing
+Agents can maintain conversational state across multiple API calls using a `thread_id`.
+- **`thread_id`**: Include this in your `CodeAgentRequest` to maintain context. If a `thread_id` is provided, the agent will load its previous state (conversation history, etc.) associated with that ID. If no `thread_id` is given or no state is found, a new conversation thread is started.
+- **Checkpointing**: The agent's state (instance of `SessionState` from `src.agents.state`) is saved after each significant interaction (e.g., LLM response, tool execution).
+- **`InMemoryCheckpointManager`**: Currently, an in-memory checkpoint manager is used. This means state persists for the lifetime of the server application but is lost on restart. Future implementations may include persistent storage options (e.g., Redis, database).
+
+### 3. Human-in-the-Loop (HITL)
+Agents can request human input or clarification during their execution.
+- **`ask_human_for_input` Tool**: An agent can decide to use this special tool if it needs human guidance. The tool takes a `question` parameter.
+- **API Flow for HITL**:
+    1. Client sends a request to `/v1/agents/code/invoke` (optionally with a `thread_id`).
+    2. If the agent calls the `ask_human_for_input` tool, the API response will have:
+       - `agent_status: "requires_human_input"`
+       - `human_input_request`: An object containing `tool_call_id` (identifying this specific pause) and `question_for_human`.
+       The `conversation_history` up to this point is saved by the agent.
+    3. The client application should display `question_for_human` to the user.
+    4. Once the user provides input, the client sends this input to the `POST /v1/agents/resume` endpoint using a `ResumeAgentRequest`. This request must include the original `thread_id`, the `tool_call_id` from the `human_input_request`, and the `human_response`.
+    5. The backend loads the saved state for the `thread_id`, appends the human's response as a "tool" message (linked via `tool_call_id`), and resumes the agent's execution.
+    6. The response from `/v1/agents/resume` will be another `CodeAgentResponse`, indicating the agent's subsequent actions (e.g., completion, another tool call, or even another HITL request).
+
+**Example HITL API Interaction:**
+
+*Initial Request to `/v1/agents/code/invoke` (same as Coding Agent example, include `thread_id`)*
+
+*Example Response indicating HITL pause:*
+```json
+{
+  "generated_code": null,
+  "explanation": "I need to know if I should overwrite the existing file 'config.py'.",
+  "agent_status": "requires_human_input",
+  "human_input_request": {
+    "tool_call_id": "hitl_call_12345",
+    "question_for_human": "The file 'config.py' already exists. Should I overwrite it?"
+  },
+  "request_params": { /* ... */ },
+  "model_used": "gpt-4-turbo"
+}
+```
+
+*Client sends user's answer to `/v1/agents/resume`:*
+```json
+{
+  "thread_id": "thread_abc123",
+  "tool_call_id": "hitl_call_12345",
+  "human_response": "Yes, please overwrite the file."
+}
+```
+The agent then continues processing.
+
 
 ## VS Code Extension: OpenHands AI Assistant
 

@@ -10,7 +10,9 @@ import asyncio
 from pathlib import Path
 import logging
 
-import aiofiles # Will be added to requirements.txt
+import aiofiles
+
+from .base import openhands_tool # Import the decorator
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +67,17 @@ def _resolve_safe_path(project_directory: str, relative_path: str) -> Path:
 
     return resolved_path
 
+@openhands_tool
 async def read_file(project_directory: str, filepath: str) -> str:
     """
-    Reads the content of a file securely within the project directory.
+    Reads the entire content of a specified file.
 
     Args:
-        project_directory: The absolute path to the root of the project.
-        filepath: The relative path to the file.
+        project_directory (str): (Internal) The absolute path to the root of the project.
+        filepath (str): The relative path from the project root to the file to be read.
 
     Returns:
-        The content of the file as a string, or an error message.
+        str: The content of the file, or an error message if reading fails.
     """
     try:
         safe_path = _resolve_safe_path(project_directory, filepath)
@@ -101,18 +104,19 @@ async def read_file(project_directory: str, filepath: str) -> str:
         logger.error(f"Could not read file '{filepath}' in {project_directory}: {e}", exc_info=True)
         return f"Error: Could not read file '{filepath}'. {str(e)}"
 
+@openhands_tool
 async def write_file(project_directory: str, filepath: str, content: str) -> str:
     """
-    Writes content to a file securely within the project directory.
-    Creates parent directories if they don't exist.
+    Writes content to a specified file. Overwrites if the file exists, creates it if not.
+    Parent directories will be created if they do not exist.
 
     Args:
-        project_directory: The absolute path to the root of the project.
-        filepath: The relative path to the file.
-        content: The content to write to the file.
+        project_directory (str): (Internal) The absolute path to the root of the project.
+        filepath (str): The relative path from the project root to the file to be written.
+        content (str): The content to write into the file.
 
     Returns:
-        A success message string, or an error message string.
+        str: A success message if writing is successful, or an error message.
     """
     try:
         safe_path = _resolve_safe_path(project_directory, filepath)
@@ -132,17 +136,20 @@ async def write_file(project_directory: str, filepath: str, content: str) -> str
         logger.error(f"Could not write file '{filepath}' in {project_directory}: {e}", exc_info=True)
         return f"Error: Could not write file '{filepath}'. {str(e)}"
 
-async def list_files(project_directory: str, path: str = "") -> list[str] | str:
+@openhands_tool
+async def list_files(project_directory: str, directory_path: str = "") -> list[str] | str:
     """
-    Lists files and directories securely within a specified path in the project directory.
-    Appends a '/' to directory names in the returned list.
+    Lists files and subdirectories within a specified relative path.
+    Appends a '/' to directory names in the output list.
 
     Args:
-        project_directory: The absolute path to the root of the project.
-        path: The relative path to the directory to list. Defaults to project root.
+        project_directory (str): (Internal) The absolute path to the root of the project.
+        directory_path (str): The relative path from the project root to the directory to list.
+                              Defaults to the project root if empty.
 
     Returns:
-        A list of file/directory names, or an error message string.
+        list[str] | str: A list of file and directory names (directories have a trailing '/'),
+                         or an error message string if listing fails.
     """
     try:
         safe_target_path = _resolve_safe_path(project_directory, path)

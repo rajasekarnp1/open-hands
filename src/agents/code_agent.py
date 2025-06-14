@@ -1,5 +1,5 @@
 """
-Coding Agent implementation with Filesystem Tool Usage.
+Coding Agent implementation with Filesystem Tool Usage and Checkpointing.
 """
 
 import json
@@ -10,26 +10,34 @@ from typing import Optional, Tuple, List, Dict, Any
 from ..models import (
     CodeAgentRequest,
     CodeAgentResponse,
-    ChatMessage,
     ChatCompletionRequest,
-    ChatCompletionResponse # For _get_llm_response
+    ChatCompletionResponse,
+    HumanInputRequest # New import
 )
+from pydantic import create_model as create_pydantic_model, ValidationError
+
 from ..core.aggregator import LLMAggregator
-from .tools import filesystem_tools # Import the new tools
+from .tools import filesystem_tools
+from .tools.registry import global_tool_registry
+from .tools.base import ToolDefinition # ToolParameter not directly used in this file's public interface
+from .tools.human_tools import HumanInterruption # New import for HITL
+from .state import SessionState, Message
+from .checkpoint import BaseCheckpointManager
 
 logger = logging.getLogger(__name__)
 
 CODE_EXPLANATION_SEPARATOR = "###EXPLANATION###"
-MAX_TOOL_ITERATIONS = 5 # Prevent infinite loops
+MAX_TOOL_ITERATIONS = 5
 
 class CodeAgent:
-    """Agent specialized for code generation tasks, with filesystem tool capabilities."""
+    """Agent specialized for code generation tasks, with filesystem tool and state capabilities."""
 
-    def __init__(self, llm_aggregator: LLMAggregator):
+    def __init__(self, llm_aggregator: LLMAggregator, checkpoint_manager: BaseCheckpointManager):
         self.llm_aggregator = llm_aggregator
+        self.checkpoint_manager = checkpoint_manager
 
-    def _construct_initial_user_prompt(self, request: CodeAgentRequest) -> str:
-        """Constructs the initial user-facing prompt including instruction, context, language."""
+    def _construct_initial_user_message_content(self, request: CodeAgentRequest) -> str:
+        """Constructs the content for the initial user message."""
         prompt_parts = []
         if request.language:
             prompt_parts.append(f"Target language: {request.language}.")
@@ -43,7 +51,7 @@ class CodeAgent:
 
         return "\n".join(prompt_parts)
 
-    def _construct_system_prompt_with_tools_if_applicable(self, request: CodeAgentRequest) -> str:
+    def _construct_system_prompt(self, request: CodeAgentRequest) -> str: # Renamed for clarity
         """Builds the system prompt. If request.project_directory is set, includes tool instructions."""
         base_system_prompt = (
             "You are an expert coding assistant. Your primary task is to generate, modify, or explain code based on the user's instruction.\n"
@@ -52,27 +60,18 @@ class CodeAgent:
             "Ensure the code is complete and runnable if possible within typical constraints."
         )
 
-        if not request.project_directory: # No project directory, no tools.
+        if not request.project_directory:
             return base_system_prompt
 
+        tool_descriptions_json = global_tool_registry.generate_llm_tool_descriptions(as_json_string=True)
         tool_instructions = f"""
 
 You have access to the following tools to interact with the user's project file system.
 The project root directory is pre-configured for you. All filepaths MUST be relative to this project root.
 Do not attempt to access files outside this project directory.
 
-Available Tools:
-1. read_file(filepath: str) -> str:
-   Reads the entire content of a specified file.
-   Example JSON: {{"tool_name": "read_file", "parameters": {{"filepath": "src/main.py"}}}}
-
-2. write_file(filepath: str, content: str) -> str:
-   Writes content to a specified file. Overwrites if exists, creates if not.
-   Example JSON: {{"tool_name": "write_file", "parameters": {{"filepath": "docs/new_feature.md", "content": "# New Feature\\nDetails..."}}}}
-
-3. list_files(directory_path: str = "") -> list[str] | str:
-   Lists files and directories within a specified relative path. Defaults to project root.
-   Example JSON: {{"tool_name": "list_files", "parameters": {{"directory_path": "src/utils"}}}}
+Available Tools (as a JSON schema list):
+{tool_descriptions_json}
 
 To use a tool, output ONLY a single valid JSON object formatted exactly as shown:
 {{"tool_name": "tool_name_here", "parameters": {{"param1": "value1", ...}}}}
@@ -87,46 +86,79 @@ If a tool call fails, I will inform you of the error, and you can try a differen
 
     async def _get_llm_response(
         self,
-        conversation_history: List[Dict[str, str]],
+        current_session_state: SessionState, # Use SessionState's history
         request: CodeAgentRequest
     ) -> Tuple[str, Optional[ChatCompletionResponse]]:
         """Calls llm_aggregator.chat_completion and returns the text content and full response."""
         model_quality_for_coding = request.model_quality or "best_quality"
 
+        # Convert Pydantic Message models to dicts for ChatCompletionRequest
+        messages_for_llm = [msg.model_dump(exclude_none=True) for msg in current_session_state.conversation_history]
+
         chat_request = ChatCompletionRequest(
-            messages=[ChatMessage(role=msg["role"], content=msg["content"]) for msg in conversation_history],
+            messages=messages_for_llm, # type: ignore | Pydantic v1/v2 compatibility for .dict()
             model="auto",
             provider=request.provider,
             model_quality=model_quality_for_coding,
-            temperature=0.3, # Suitable for coding
+            temperature=0.3,
         )
 
         try:
-            logger.debug(f"CodeAgent sending request to LLMAggregator with history: {conversation_history}")
-            llm_response = await self.llm_aggregator.chat_completion(chat_request)
+            logger.debug(f"CodeAgent sending request to LLMAggregator with history: {messages_for_llm}")
+            llm_response_obj = await self.llm_aggregator.chat_completion(chat_request)
 
-            if llm_response.choices and llm_response.choices[0].message:
-                content = llm_response.choices[0].message.content.strip()
+            if llm_response_obj.choices and llm_response_obj.choices[0].message and llm_response_obj.choices[0].message.content is not None:
+                content = llm_response_obj.choices[0].message.content.strip()
                 logger.debug(f"CodeAgent received raw response content: {content}")
-                return content, llm_response
-            else:
-                logger.warning("LLM response was empty or malformed.")
-                return "Error: LLM response was empty.", None
+                return content, llm_response_obj
+            else: # Handle cases like content being None if tool_calls are present.
+                # If there are tool_calls, the content might be None or empty. The raw response_text should reflect this.
+                # The _parse_llm_for_tool_call should primarily look at llm_response_obj.choices[0].message.tool_calls
+                raw_message = llm_response_obj.choices[0].message if (llm_response_obj.choices and llm_response_obj.choices[0].message) else None
+                if raw_message and raw_message.tool_calls:
+                    # If there's a tool call, we might not have textual content.
+                    # We need to reconstruct the part of the message that represents the tool call for history.
+                    # For now, assume the _parse_llm_for_tool_call will use the full message object.
+                    # The textual response here could be a string representation of the tool call or reasoning.
+                    # Let's pass the full message object to _parse_llm_for_tool_call later.
+                    # For now, if content is None but tool_calls exist, return an empty string for text, but the full response.
+                    return "", llm_response_obj # Empty string for text, but pass full response for tool parsing
+                logger.warning("LLM response content was None or choices were empty.")
+                return "Error: LLM response was empty or malformed.", None
         except Exception as e:
             logger.error(f"Error calling LLM aggregator: {e}", exc_info=True)
             return f"Error: Could not get response from LLM. {str(e)}", None
 
+    def _parse_llm_for_tool_call(self, llm_message: Optional[Message]) -> Optional[Dict[str, Any]]:
+        """
+        Parses a Message object from the LLM for a tool call.
+        OpenAI-style tool calls are expected in message.tool_calls.
+        This method adapts to look for JSON in content if direct tool_calls field isn't used/populated.
+        """
+        if not llm_message:
+            return None
 
-    def _parse_llm_for_tool_call(self, response_text: str) -> Optional[Dict[str, Any]]:
-        """
-        Attempts to parse a JSON tool call from the response_text.
-        The JSON should be the last significant part of the text, possibly after some reasoning.
-        It might be enclosed in backticks.
-        """
-        logger.debug(f"Attempting to parse tool call from: {response_text}")
-        # Regex to find JSON block, possibly enclosed in ```json ... ``` or ``` ... ```
-        # It tries to find the JSON block that is most likely a tool call.
-        # This regex looks for a JSON object, possibly with leading/trailing whitespace or markdown code fences.
+        if llm_message.tool_calls and isinstance(llm_message.tool_calls, list) and len(llm_message.tool_calls) > 0:
+            # Assuming one tool call per response as per current prompting strategy
+            first_tool_call = llm_message.tool_calls[0]
+            if first_tool_call.get("type") == "function" and first_tool_call.get("function"):
+                function_details = first_tool_call["function"]
+                tool_name = function_details.get("name")
+                try:
+                    # Arguments are a JSON string
+                    tool_params = json.loads(function_details.get("arguments", "{}"))
+                    if tool_name and isinstance(tool_params, dict):
+                        logger.info(f"Parsed tool call via tool_calls: {tool_name}, params: {tool_params}")
+                        return {"tool_name": tool_name, "parameters": tool_params, "id": first_tool_call.get("id")}
+                except json.JSONDecodeError as e:
+                    logger.warning(f"JSONDecodeError parsing arguments for tool {tool_name}: {e}")
+            return None # Malformed tool_call structure
+
+        # Fallback: try to parse from text content if no structured tool_calls
+        response_text = llm_message.content if isinstance(llm_message.content, str) else ""
+        if not response_text: return None
+
+        logger.debug(f"Attempting to parse tool call from text content: {response_text}")
         match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```|(\{[\s\S]*\"tool_name\"[\s\S]*\})$", response_text, re.DOTALL | re.MULTILINE)
 
         if match:
@@ -135,36 +167,14 @@ If a tool call fails, I will inform you of the error, and you can try a differen
                 try:
                     tool_call = json.loads(json_str.strip())
                     if isinstance(tool_call, dict) and "tool_name" in tool_call and "parameters" in tool_call:
-                        logger.info(f"Parsed tool call: {tool_call}")
+                        logger.info(f"Parsed tool call from text: {tool_call}")
                         return tool_call
-                except json.JSONDecodeError as e:
-                    logger.warning(f"JSONDecodeError parsing tool call '{json_str}': {e}")
-                    # Attempt to strip potential non-JSON explanation after the JSON block if LLM didn't stop
-                    # This is a basic attempt, more robust parsing might be needed for complex LLM outputs
-                    try:
-                        # Find the last valid JSON object in the string
-                        potential_json_objects = re.findall(r'\{.*?\}', response_text)
-                        if potential_json_objects:
-                            for obj_str in reversed(potential_json_objects):
-                                try:
-                                    tool_call_candidate = json.loads(obj_str)
-                                    if isinstance(tool_call_candidate, dict) and \
-                                       "tool_name" in tool_call_candidate and \
-                                       "parameters" in tool_call_candidate:
-                                        logger.info(f"Successfully parsed tool call after cleanup: {tool_call_candidate}")
-                                        return tool_call_candidate
-                                except json.JSONDecodeError:
-                                    continue # Try previous JSON object
-                        logger.warning("No valid tool call JSON found even after regex match.")
-                        return None
-                    except Exception as final_e: # pylint: disable=broad-except
-                        logger.error(f"Exception during final parse attempt for tool call: {final_e}")
-                        return None
-        logger.debug("No tool call found in LLM response.")
+                except json.JSONDecodeError: # Ignore if not valid JSON
+                    pass
+        logger.debug("No tool call found in LLM response text content.")
         return None
 
     def _parse_final_response(self, response_text: str) -> Tuple[str, Optional[str]]:
-        """Uses existing logic to parse code and explanation (e.g., ###EXPLANATION### separator)."""
         generated_code = response_text
         explanation: Optional[str] = None
 
@@ -174,99 +184,256 @@ If a tool call fails, I will inform you of the error, and you can try a differen
             if len(parts) > 1:
                 explanation = parts[1].strip()
 
-        # Remove potential backticks or language specifiers if LLM wraps code in markdown
-        # This should be applied only to the code part
         if generated_code.startswith("```") and generated_code.endswith("```"):
             lines = generated_code.splitlines()
-            if len(lines) > 1:
-                generated_code = "\n".join(lines[1:-1]).strip()
-            else:
-                generated_code = "" # Only backticks or empty
-        elif generated_code.startswith("```"): # Check if LLM forgot closing backticks
+            if len(lines) > 1: generated_code = "\n".join(lines[1:-1]).strip()
+            else: generated_code = ""
+        elif generated_code.startswith("```"):
              lines = generated_code.splitlines()
-             if len(lines) > 0:
-                generated_code = "\n".join(lines[1:]).strip()
-
-
+             if len(lines) > 0: generated_code = "\n".join(lines[1:]).strip()
         return generated_code, explanation
 
-    async def generate_code(self, request: CodeAgentRequest) -> CodeAgentResponse:
+    def _validate_tool_parameters(
+        self,
+        tool_def: ToolDefinition,
+        provided_args: Dict[str, Any]
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
-        Generates code based on the user's instruction, potentially using filesystem tools
-        if a project_directory is provided.
+        Validates provided arguments against the tool's parameter schema.
+        Returns (validated_args, None) or (None, error_message).
         """
-        system_prompt = self._construct_system_prompt_with_tools_if_applicable(request)
-        initial_user_prompt = self._construct_initial_user_prompt(request)
+        param_definitions = {p.name: p for p in tool_def.parameters}
+        validated_args = {}
+        errors = []
 
-        conversation_history: List[Dict[str, str]] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": initial_user_prompt}
-        ]
+        # Check for missing required parameters
+        for name, definition in param_definitions.items():
+            if definition.required and name not in provided_args:
+                errors.append(f"Missing required parameter: '{name}' ({definition.description}). Expected type: {definition.type}.")
+
+        if errors: # Fail fast if required params are missing
+            return None, " ".join(errors)
+
+        # Type checking and building arguments for dynamic Pydantic model
+        # This is a simplified type mapping. JSON schema types to Python types.
+        type_map = {
+            "string": str,
+            "integer": int,
+            "number": float,
+            "boolean": bool,
+            "array": list, # Further validation for array items would be needed
+            "object": dict, # Further validation for object properties would be needed
+        }
+
+        fields_for_dynamic_model: Dict[str, Any] = {}
+        for name, definition in param_definitions.items():
+            python_type = type_map.get(definition.type, Any) # Default to Any if type unknown
+            if definition.required:
+                fields_for_dynamic_model[name] = (python_type, ...) # Ellipsis means required
+            else:
+                # Pydantic needs a default value for optional fields in create_model
+                # If your tool functions handle None or have their own defaults, that's fine.
+                # Here, we provide None as the default for the dynamic model.
+                fields_for_dynamic_model[name] = (Optional[python_type], None)
+
+
+        if not fields_for_dynamic_model and not provided_args: # Tool takes no arguments
+             return {}, None # No validation needed, return empty dict
+        if not fields_for_dynamic_model and provided_args: # Tool takes no args, but some were provided
+            return None, f"Tool '{tool_def.name}' expects no arguments, but received: {', '.join(provided_args.keys())}."
+
+
+        # Create a dynamic Pydantic model for validation
+        try:
+            # Filter provided_args to only include those defined in the tool
+            args_to_validate = {k: v for k, v in provided_args.items() if k in fields_for_dynamic_model}
+
+            # Check for extraneous arguments provided by LLM
+            extra_args = set(provided_args.keys()) - set(param_definitions.keys())
+            if extra_args:
+                errors.append(f"Extraneous parameters provided: {', '.join(extra_args)}. Valid parameters are: {', '.join(param_definitions.keys())}.")
+
+
+            DynamicToolArgsModel = create_pydantic_model(
+                f"{tool_def.name}Args",
+                **fields_for_dynamic_model # type: ignore
+            )
+
+            # Validate the (filtered) arguments
+            validated_model_instance = DynamicToolArgsModel(**args_to_validate)
+            validated_args = validated_model_instance.model_dump(exclude_unset=True) # Get validated args
+
+        except ValidationError as ve:
+            # Format Pydantic's validation errors into a user-friendly string
+            for error in ve.errors():
+                param_name = error['loc'][0] if error['loc'] else 'unknown_param'
+                errors.append(f"Parameter '{param_name}': {error['msg']}.")
+        except Exception as e: # Catch any other errors during model creation/validation
+             errors.append(f"Unexpected error during parameter validation: {str(e)}")
+
+
+        if errors:
+            return None, " ".join(errors)
+
+        return validated_args, None
+
+
+    async def generate_code(self, request: CodeAgentRequest) -> CodeAgentResponse:
+        current_session_state: Optional[SessionState] = None
+        is_new_thread = True
+
+        if request.thread_id:
+            logger.info(f"Attempting to load state for thread_id: {request.thread_id}")
+            current_session_state = await self.checkpoint_manager.load_state(request.thread_id)
+            if current_session_state:
+                is_new_thread = False
+                logger.info(f"Loaded state for thread_id: {request.thread_id}, history length: {len(current_session_state.conversation_history)}")
+                # Add current user instruction to existing history
+                user_message_content = self._construct_initial_user_message_content(request)
+                current_session_state.add_message(role="user", content=user_message_content)
+            else:
+                logger.info(f"No existing state found for thread_id: {request.thread_id}. Creating new session.")
+
+        if not current_session_state:
+            current_session_state = SessionState(
+                thread_id=request.thread_id,
+                original_request_info=request.model_dump(exclude_none=True, exclude={"instruction", "context"})
+                # Store relevant, non-sensitive parts of the original request.
+                # 'instruction' and 'context' are part of the first user message.
+            )
+            system_prompt = self._construct_system_prompt(request) # Pass full request for prompt construction
+            current_session_state.add_message(role="system", content=system_prompt)
+            user_message_content = self._construct_initial_user_message_content(request) # Pass full request
+            current_session_state.add_message(role="user", content=user_message_content)
+
+        if request.thread_id and is_new_thread: # Save state only if it's a new thread being initialized
+            await self.checkpoint_manager.save_state(request.thread_id, current_session_state)
 
         last_model_used: Optional[str] = None
 
         for iteration in range(MAX_TOOL_ITERATIONS):
-            logger.info(f"CodeAgent Iteration {iteration + 1}/{MAX_TOOL_ITERATIONS}")
+            logger.info(f"CodeAgent Iteration {iteration + 1}/{MAX_TOOL_ITERATIONS} for thread_id: {request.thread_id}")
 
-            llm_response_text, llm_full_response = await self._get_llm_response(conversation_history, request)
-            if llm_full_response: # Store model from last successful LLM call
+            response_text, llm_full_response = await self._get_llm_response(current_session_state, request)
+
+            if llm_full_response and llm_full_response.choices: # Store model from last successful LLM call
                 last_model_used = llm_full_response.model
+                llm_message_obj = llm_full_response.choices[0].message # This is a ChatMessage from models.py
+                # Convert to state.Message for history
+                assistant_response_message = Message(
+                    role="assistant",
+                    content=llm_message_obj.content,
+                    tool_calls=llm_message_obj.tool_calls
+                )
+            else: # Error condition from _get_llm_response
+                return CodeAgentResponse(generated_code="", explanation=response_text, request_params=request.model_dump(), model_used=last_model_used)
 
-            if "Error: Could not get response from LLM" in llm_response_text: # Critical LLM error
-                return CodeAgentResponse(generated_code="", explanation=llm_response_text, request_params=request.dict(), model_used=last_model_used)
+            current_session_state.add_message(
+                role=assistant_response_message.role,
+                content=assistant_response_message.content,
+                tool_calls=assistant_response_message.tool_calls
+            )
+            # No immediate save after adding assistant's raw response, save after tool cycle or final response.
 
-            tool_call = self._parse_llm_for_tool_call(llm_response_text)
+            tool_call_parsed_info = self._parse_llm_for_tool_call(assistant_response_message) # Pass the Message object
 
-            if tool_call:
-                # Append LLM's response that includes the tool call reasoning and the call itself
-                conversation_history.append({"role": "assistant", "content": llm_response_text})
-
-                tool_name = tool_call.get("tool_name")
-                tool_params = tool_call.get("parameters", {})
-                tool_output: str = ""
+            if tool_call_parsed_info:
+                tool_name = tool_call_parsed_info.get("tool_name")
+                tool_params = tool_call_parsed_info.get("parameters", {})
+                tool_call_id = tool_call_parsed_info.get("id") # For OpenAI compliant tool message
+                tool_output_content: str = ""
 
                 if not request.project_directory:
-                    tool_output = "Error: Project directory not specified. Cannot use file system tools."
+                    tool_output_content = "Error: Project directory not specified. Cannot use file system tools."
                     logger.warning("Tool call attempted without project_directory specified.")
-                elif tool_name == "read_file":
-                    filepath = tool_params.get("filepath", "")
-                    logger.info(f"Executing tool: read_file, params: {{'filepath': '{filepath}'}}")
-                    tool_output = await filesystem_tools.read_file(request.project_directory, filepath)
-                elif tool_name == "write_file":
-                    filepath = tool_params.get("filepath", "")
-                    content = tool_params.get("content", "")
-                    logger.info(f"Executing tool: write_file, params: {{'filepath': '{filepath}', 'content_len': {len(content)}}}")
-                    tool_output = await filesystem_tools.write_file(request.project_directory, filepath, content)
-                elif tool_name == "list_files":
-                    dir_path = tool_params.get("directory_path", "")
-                    logger.info(f"Executing tool: list_files, params: {{'directory_path': '{dir_path}'}}")
-                    # The tool returns list[str] | str. We need to convert list to string for history.
-                    raw_tool_output = await filesystem_tools.list_files(request.project_directory, dir_path)
-                    if isinstance(raw_tool_output, list):
-                        tool_output = "\n".join(raw_tool_output)
-                    else: # It's already an error string
-                        tool_output = raw_tool_output
                 else:
-                    logger.warning(f"Unknown tool name: {tool_name}")
-                    tool_output = f"Error: Unknown tool '{tool_name}'. Available tools are: read_file, write_file, list_files."
+                    tool_definition = global_tool_registry.get_tool(tool_name)
+                    if tool_definition:
+                        validated_params, validation_error_msg = self._validate_tool_parameters(tool_definition, tool_params)
 
-                logger.debug(f"Tool output for {tool_name}: {tool_output[:200]}...") # Log snippet
-                conversation_history.append({"role": "tool", "content": tool_output})
-            else:
-                # No tool call, assume final answer from LLM
+                        if validation_error_msg:
+                            logger.warning(f"Tool parameter validation failed for {tool_name}: {validation_error_msg}")
+                            tool_output_content = f"Error: Parameter validation failed for tool '{tool_name}'. {validation_error_msg}"
+                        elif validated_params is not None: # Validation succeeded
+                            kwargs_for_tool_call = validated_params
+                            # Inject internal parameters AFTER validation of LLM-provided ones
+                            if "project_directory" in tool_definition.internal_parameters: # Ensure it's defined as internal
+                                kwargs_for_tool_call["project_directory"] = request.project_directory
+
+                            logger.info(f"Executing tool: {tool_name}, validated_params: {validated_params}")
+                            try:
+                                raw_tool_output = await tool_definition.function(**kwargs_for_tool_call)
+                                # Convert list output to string for history, assign to tool_output_content
+                                if isinstance(raw_tool_output, list): tool_output_content = "\n".join(raw_tool_output)
+                                elif isinstance(raw_tool_output, str): tool_output_content = raw_tool_output
+                                else: tool_output_content = str(raw_tool_output)
+
+                            except HumanInterruption as hi:
+                                logger.info(f"Human interruption requested by tool {tool_name} with ID {hi.tool_call_id}: {hi.question_for_human}")
+                                # State should be saved before returning this special response.
+                                # The assistant's message that *led* to this tool call is already in history.
+                                # We don't add a "tool" message for HumanInterruption itself yet,
+                                # that will come from the /resume endpoint.
+                                if request.thread_id:
+                                    await self.checkpoint_manager.save_state(request.thread_id, current_session_state)
+
+                                return CodeAgentResponse(
+                                    agent_status="requires_human_input",
+                                    human_input_request=HumanInputRequest(
+                                        tool_call_id=hi.tool_call_id, # This is the ID of the ask_human_for_input tool call
+                                        question_for_human=hi.question_for_human
+                                    ),
+                                    # Include current conversation history for context if UI needs it
+                                    # generated_code and explanation might be None or from previous thoughts
+                                    request_params=request.model_dump(),
+                                    model_used=last_model_used
+                                    # Potentially add conversation history to response if client needs it to show context with question
+                                )
+                            except TypeError as te:
+                                logger.error(f"TypeError calling tool {tool_name} with combined params {kwargs_for_tool_call}: {te}", exc_info=True)
+                                tool_output_content = f"Error: Incorrect parameters or setup for tool '{tool_name}'. {str(te)}"
+                            except Exception as e:
+                                logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+                                tool_output_content = f"Error: Failed to execute tool '{tool_name}'. {str(e)}"
+                        else:
+                             logger.error(f"Invalid state after parameter validation for tool {tool_name}: No validated_params and no error_msg.")
+                             tool_output_content = f"Error: Unknown validation issue for tool '{tool_name}'."
+                    else: # tool_definition not found
+                        logger.warning(f"Unknown tool name: {tool_name}")
+                        available_tools = ", ".join([t.name for t in global_tool_registry.get_all_tools()])
+                        tool_output_content = f"Error: Unknown tool '{tool_name}'. Available tools are: {available_tools}."
+
+                logger.debug(f"Tool output for {tool_name}: {tool_output_content[:500]}...")
+                current_session_state.add_message(role="tool", content=tool_output_content, name=tool_name, tool_call_id=tool_call_id)
+
+                if request.thread_id: # Save state after tool interaction
+                    await self.checkpoint_manager.save_state(request.thread_id, current_session_state)
+            else: # No tool call, assume final answer from LLM
                 logger.info("No tool call detected. Parsing as final response.")
-                generated_code, explanation = self._parse_final_response(llm_response_text)
+                # The response_text is the assistant's content from the last LLM call
+                generated_code, explanation = self._parse_final_response(response_text)
+                if request.thread_id: # Save final state
+                     await self.checkpoint_manager.save_state(request.thread_id, current_session_state)
                 return CodeAgentResponse(
-                    generated_code=generated_code,
-                    explanation=explanation,
-                    request_params=request.dict(),
-                    model_used=last_model_used
+                    generated_code=generated_code, explanation=explanation,
+                    request_params=request.model_dump(),
+                    model_used=last_model_used,
+                    agent_status="completed"
                 )
 
-        logger.warning("Agent exceeded maximum tool iterations.")
+        logger.warning(f"Agent exceeded maximum tool iterations for thread_id: {request.thread_id}")
+        final_explanation_on_max_iter = "The agent could not complete the request within the allowed number of steps."
+        if request.thread_id: # Save state even if iterations exceeded
+            # Add a final message indicating max iterations was hit.
+            current_session_state.add_message(role="assistant", content=final_explanation_on_max_iter)
+            await self.checkpoint_manager.save_state(request.thread_id, current_session_state)
         return CodeAgentResponse(
-            generated_code="Error: Agent exceeded maximum tool iterations.",
-            explanation="The agent could not complete the request within the allowed number of steps.",
-            request_params=request.dict(),
-            model_used=last_model_used
+            generated_code="", # No code generated if max iterations hit this way
+            explanation=final_explanation_on_max_iter,
+            request_params=request.model_dump(),
+            model_used=last_model_used,
+            agent_status="error",
+            error_details="Exceeded maximum tool iterations."
         )
+
+```
