@@ -9,6 +9,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
+from pathlib import Path # New import for project_directory validation
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -20,17 +21,23 @@ from src.config import settings # Centralized settings
 from ..models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
+    ChatMessage,
     AccountCredentials,
     ProviderConfig,
-    SystemConfig
+    SystemConfig,
+    CodeAgentRequest,
+    CodeAgentResponse,
+    ResumeAgentRequest # New import
 )
+from pydantic import BaseModel
+
 from ..core.aggregator import LLMAggregator
+from ..agents.code_agent import CodeAgent
+from ..agents.checkpoint import InMemoryCheckpointManager, BaseCheckpointManager # New imports
 from ..core.account_manager import AccountManager
 from ..core.router import ProviderRouter
 from ..core.rate_limiter import RateLimiter, RateLimitExceeded
-from ..providers.openrouter import create_openrouter_provider
-from ..providers.groq import create_groq_provider
-from ..providers.cerebras import create_cerebras_provider
+# Specific provider imports are now within lifespan or not needed at top level if dynamically loaded
 
 
 logger = logging.getLogger(__name__)
@@ -42,55 +49,64 @@ security = HTTPBearer(auto_error=False)
 if not settings.ADMIN_TOKEN:
     logger.warning("ADMIN_TOKEN not set in environment or .env file. Admin endpoints will be disabled if called.")
 
-# Global aggregator instance
-aggregator: Optional[LLMAggregator] = None
+# Global instances
+aggregator_instance: Optional[LLMAggregator] = None # Renamed for clarity
+code_agent_instance: Optional[CodeAgent] = None
+checkpoint_manager_instance: Optional[BaseCheckpointManager] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global aggregator
+    global aggregator_instance, code_agent_instance, checkpoint_manager_instance
     
-    # Startup
-    logger.info("Starting LLM API Aggregator...")
+    logger.info("Starting application lifespan...")
     
     # Initialize components
     account_manager = AccountManager()
     rate_limiter = RateLimiter()
-    
-    # Create providers
-    providers = []
-    
-    # Initialize providers with empty credentials (will be added via API)
-    openrouter = create_openrouter_provider([])
-    groq = create_groq_provider([])
-    cerebras = create_cerebras_provider([])
-    
-    providers.extend([openrouter, groq, cerebras])
-    
-    # Create provider configs dict
-    provider_configs = {provider.name: provider.config for provider in providers}
-    
-    # Initialize router
-    router = ProviderRouter(provider_configs)
-    
-    # Initialize aggregator
-    aggregator = LLMAggregator(
-        providers=providers,
+    checkpoint_manager_instance = InMemoryCheckpointManager() # Create checkpoint manager instance
+
+    # Dynamically load providers (conceptual example, actual loading might be more complex)
+    # This part should ideally discover all provider modules in src/providers/
+    # and call their respective create_<provider_name>_provider functions.
+    providers_list = []
+    provider_names = ["openrouter", "groq", "cerebras", "anthropic"] # Example list
+    for name in provider_names:
+        try:
+            module = __import__(f"src.providers.{name}", fromlist=[f"create_{name}_provider"])
+            create_func = getattr(module, f"create_{name}_provider")
+            providers_list.append(create_func([])) # Initialize with empty credentials
+        except (ImportError, AttributeError) as e:
+            logger.error(f"Failed to load provider {name}: {e}")
+
+    if not providers_list:
+        logger.warning("No providers were loaded. LLM Aggregator might not function correctly.")
+
+    provider_configs = {provider.name: provider.config for provider in providers_list}
+    router = ProviderRouter(provider_configs=provider_configs) # Pass configs correctly
+
+    aggregator_instance = LLMAggregator(
+        providers=providers_list,
         account_manager=account_manager,
         router=router,
         rate_limiter=rate_limiter
     )
+
+    # Initialize CodeAgent with the aggregator and checkpoint manager
+    code_agent_instance = CodeAgent(
+        llm_aggregator=aggregator_instance,
+        checkpoint_manager=checkpoint_manager_instance
+    )
     
-    logger.info("LLM API Aggregator started successfully")
+    logger.info("LLM API Aggregator and Agents initialized successfully.")
     
     yield
     
-    # Shutdown
-    logger.info("Shutting down LLM API Aggregator...")
-    if aggregator:
-        await aggregator.close()
-    logger.info("LLM API Aggregator shut down")
+    logger.info("Shutting down application lifespan...")
+    if aggregator_instance:
+        await aggregator_instance.close()
+    logger.info("Application shut down successfully.")
 
 
 # Create FastAPI app
@@ -163,31 +179,224 @@ async def chat_completions(
 ):
     """OpenAI-compatible chat completions endpoint."""
     
-    if not aggregator:
+    if not aggregator_instance: # Use updated global name
         raise HTTPException(status_code=503, detail="Service not ready")
     
     try:
         if request.stream:
-            # Return streaming response
             async def generate():
-                async for chunk in aggregator.chat_completion_stream(request, user_id):
+                async for chunk in aggregator_instance.chat_completion_stream(request, user_id): # Use updated global name
                     yield f"data: {chunk.json()}\n\n"
                 yield "data: [DONE]\n\n"
             
             return StreamingResponse(
                 generate(),
-                media_type="text/plain",
+                media_type="text/event-stream", # Changed to text/event-stream from text/plain
                 headers={"Cache-Control": "no-cache"}
             )
         else:
-            # Return regular response
-            response = await aggregator.chat_completion(request, user_id)
+            response = await aggregator_instance.chat_completion(request, user_id) # Use updated global name
             return response
             
     except RateLimitExceeded as e:
         raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         logger.error(f"Chat completion error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Pydantic model for the new contextual chat endpoint
+class ContextualChatRequest(BaseModel):
+    prompt: str
+    selected_text: Optional[str] = None
+    active_file_content: Optional[str] = None
+    model: Optional[str] = "auto"
+    provider: Optional[str] = None
+    model_quality: Optional[str] = None
+    stream: bool = False
+    # Add other relevant parameters from ChatCompletionRequest if needed
+    # e.g., max_tokens, temperature, etc.
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    stop: Optional[List[str]] = None # Assuming stop is List[str] based on ChatCompletionRequest
+
+
+@app.post("/v1/contextual_chat/completions", response_model=ChatCompletionResponse)
+async def contextual_chat_completions(
+    request: ContextualChatRequest,
+    background_tasks: BackgroundTasks, # Keep if needed for background tasks
+    user_id: Optional[str] = Depends(get_user_id) # Keep for consistency
+):
+    """Endpoint for contextual chat, combining prompt with editor context."""
+
+    if not aggregator_instance: # Use updated global name
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    full_prompt = f"{request.prompt}"
+    if request.selected_text:
+        full_prompt += f"\n\n## Selected Code Context:\n```\n{request.selected_text}\n```"
+    if request.active_file_content:
+        # Limit full file context to avoid overly large prompts, e.g., first/last N lines or a section around selection
+        # For now, let's include a placeholder for this idea. A simple truncation might be:
+        MAX_FILE_CONTEXT_LEN = 10000 # Characters
+        file_context_to_send = request.active_file_content
+        if len(file_context_to_send) > MAX_FILE_CONTEXT_LEN:
+            # Basic truncation, could be smarter (e.g. keep start and end)
+            file_context_to_send = request.active_file_content[:MAX_FILE_CONTEXT_LEN] + "\n... (truncated)"
+        full_prompt += f"\n\n## Full File Context (partial):\n```\n{file_context_to_send}\n```"
+
+    chat_request = ChatCompletionRequest(
+        messages=[ChatMessage(role="user", content=full_prompt)],
+        model=request.model if request.model else "auto",
+        provider=request.provider,
+        model_quality=request.model_quality,
+        stream=request.stream,
+        max_tokens=request.max_tokens,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        stop=request.stop
+        # user=user_id # Can pass user_id if your aggregator/providers use it
+    )
+
+    try:
+        if chat_request.stream:
+            async def generate_stream():
+                async for chunk in aggregator_instance.chat_completion_stream(chat_request, user_id): # Use updated global name
+                    yield f"data: {chunk.json()}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                generate_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache"}
+            )
+        else:
+            response = await aggregator_instance.chat_completion(chat_request, user_id) # Use updated global name
+            return response
+
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except Exception as e:
+        logger.error(f"Contextual chat completion error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/agents/code/invoke", response_model=CodeAgentResponse)
+async def code_agent_invoke(
+    request: CodeAgentRequest,
+    user_id: Optional[str] = Depends(get_user_id) # For potential future use (e.g. user-specific limits)
+):
+    """Endpoint to invoke the CodeAgent."""
+    if not code_agent_instance:
+        raise HTTPException(status_code=503, detail="CodeAgent not ready")
+
+    # Validate project_directory if provided
+    if request.project_directory:
+        logger.info(f"Received request for CodeAgent with project_directory: {request.project_directory}")
+        try:
+            # Security: Resolve the path to prevent certain types of manipulation,
+            # though _resolve_safe_path in the tool itself is the primary defense.
+            path_obj = Path(request.project_directory).resolve()
+            if not path_obj.exists():
+                logger.warning(f"Project directory '{request.project_directory}' (resolved: '{path_obj}') does not exist.")
+                raise HTTPException(status_code=400, detail=f"Project directory '{request.project_directory}' does not exist.")
+            if not path_obj.is_dir():
+                logger.warning(f"Project directory '{request.project_directory}' (resolved: '{path_obj}') is not a directory.")
+                raise HTTPException(status_code=400, detail=f"Project directory '{request.project_directory}' is not a directory.")
+
+            # Update request.project_directory to the resolved, absolute path for consistency downstream
+            # This ensures that the agent and tools always work with a verified absolute path.
+            request.project_directory = str(path_obj)
+            logger.info(f"Validated project_directory: {request.project_directory}")
+
+        except SecurityException as se: # Assuming Path.resolve() might raise SecurityException for some odd paths
+            logger.error(f"Security exception resolving project directory '{request.project_directory}': {se}")
+            raise HTTPException(status_code=400, detail=f"Invalid project directory path (security concern): {request.project_directory}")
+        except Exception as path_e: # Catch other potential path errors during validation
+            logger.error(f"Error validating project directory '{request.project_directory}': {path_e}")
+            raise HTTPException(status_code=400, detail=f"Error validating project directory: {str(path_e)}")
+
+    try:
+        response = await code_agent_instance.generate_code(request)
+        return response
+    except Exception as e:
+        logger.error(f"CodeAgent invocation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/agents/resume", response_model=CodeAgentResponse)
+async def resume_agent_execution(
+    resume_request: ResumeAgentRequest,
+    user_id: Optional[str] = Depends(get_user_id) # For consistency and potential future use
+):
+    """Endpoint to resume CodeAgent execution after human input."""
+    if not code_agent_instance or not checkpoint_manager_instance:
+        logger.error("CodeAgent or CheckpointManager not initialized for resume.")
+        raise HTTPException(status_code=503, detail="Agent components not ready.")
+
+    logger.info(f"Resuming agent for thread_id: {resume_request.thread_id}, tool_call_id: {resume_request.tool_call_id}")
+
+    # 1. Load state
+    current_session_state = await checkpoint_manager_instance.load_state(resume_request.thread_id)
+    if not current_session_state:
+        logger.warning(f"No session state found for thread_id: {resume_request.thread_id} on resume.")
+        raise HTTPException(status_code=404, detail=f"No session state found for thread_id: {resume_request.thread_id}")
+
+    # 2. Add human response as a "tool" message to history
+    # The 'name' should match the tool that asked for human input, typically 'ask_human_for_input'.
+    # The 'tool_call_id' must match the ID of the tool call that was interrupted.
+    current_session_state.add_message(
+        role="tool",
+        name="ask_human_for_input", # Assuming this was the tool name that paused
+        content=resume_request.human_response,
+        tool_call_id=resume_request.tool_call_id
+    )
+
+    # 3. Save updated state
+    await checkpoint_manager_instance.save_state(resume_request.thread_id, current_session_state)
+
+    # 4. Re-construct the original CodeAgentRequest parameters for the agent to continue
+    # The agent's generate_code method will load the state (including the new human response)
+    # and continue the loop. The original instruction is already part of the history.
+    # We need to provide other parameters like project_directory, model_quality, etc.
+    # These are now stored in current_session_state.original_request_info.
+
+    if not current_session_state.original_request_info:
+        logger.error(f"Original request info not found in session state for thread_id: {resume_request.thread_id}")
+        raise HTTPException(status_code=500, detail="Internal error: Missing original request info for resumption.")
+
+    # Create a new CodeAgentRequest for the resumption call.
+    # The 'instruction' and 'context' are not strictly needed here as the conversation
+    # history drives the resumption, but they are required fields in CodeAgentRequest.
+    # We can use placeholders or retrieve them if stored separately (currently not).
+    # For now, the agent's _construct_initial_user_message_content is only called for new threads.
+    # When resuming, it adds the *new user message* which isn't what we want here.
+    # The generate_code method needs to be robust to being called with a history
+    # that already includes the initial user instruction.
+
+    # The most important part is the thread_id and other parameters that affect agent execution.
+    # The `instruction` in this resumed request will be added to history by `generate_code`
+    # if `is_new_thread` is true, which it won't be here. So we can pass a generic one.
+    # The `code_agent.generate_code` will load the history which now includes the human's answer.
+
+    original_params = current_session_state.original_request_info
+    resumed_agent_request = CodeAgentRequest(
+        instruction="Continue based on human feedback.", # This instruction is for this specific call, history is main driver
+        project_directory=original_params.get("project_directory"),
+        thread_id=resume_request.thread_id,
+        model_quality=original_params.get("model_quality"),
+        provider=original_params.get("provider"),
+        language=original_params.get("language") # Ensure language is also carried over if set
+        # Other fields from original_request_info could be added here too
+    )
+
+    logger.debug(f"Calling generate_code for resumption with request: {resumed_agent_request.model_dump(exclude_none=True)}")
+    try:
+        # The agent will load the state (which includes the new human response) and continue.
+        response = await code_agent_instance.generate_code(resumed_agent_request)
+        return response
+    except Exception as e:
+        logger.error(f"CodeAgent resumption error for thread_id {resume_request.thread_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

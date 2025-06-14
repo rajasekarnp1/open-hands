@@ -27,6 +27,7 @@ This will guide you through adding API keys for various providers like:
 - **OpenRouter** (50+ free models)
 - **Groq** (ultra-fast inference)
 - **Cerebras** (fast inference with 8K context)
+- **Anthropic** (Claude 3 models - BYOK)
 - **Together AI** (free tier + trial credits)
 - **Cohere** (Command models)
 
@@ -176,11 +177,65 @@ Request body:
     {"role": "user", "content": "Hello!"}
   ],
   "provider": "openrouter",  // Optional: force specific provider
+  "model_quality": "balanced", // Optional: "fastest", "best_quality", "balanced"
   "temperature": 0.7,
   "max_tokens": 1000,
   "stream": false
 }
 ```
+
+### Coding Agent Endpoint
+
+```
+POST /v1/agents/code/invoke
+```
+
+Request body (`CodeAgentRequest`):
+```json
+{
+  "instruction": "Create a Python function that returns the factorial of a number.",
+  "context": "def existing_function():\n  pass", // Optional
+  "language": "python", // Optional
+  "project_directory": "/path/to/user/project", // Optional: Enables filesystem tools
+  "thread_id": "thread_abc123", // Optional: For stateful, multi-turn conversations
+  "model_quality": "best_quality", // Optional
+  "provider": null // Optional
+}
+```
+
+If `project_directory` is provided, the agent can use sandboxed filesystem tools (`read_file`, `write_file`, `list_files`). See `README.md` for tool details.
+
+Response body (`CodeAgentResponse`):
+```json
+{
+  "generated_code": "def factorial(n): ...", // Can be null if agent pauses or errors
+  "explanation": "This function calculates...",
+  "agent_status": "completed", // e.g., "completed", "requires_human_input", "error"
+  "human_input_request": null, // Populated if agent_status is "requires_human_input"
+                               // e.g., {"tool_call_id": "call_id_123", "question_for_human": "Proceed?"}
+  "request_params": { /* original request parameters */ },
+  "model_used": "anthropic/claude-3-opus-20240229", // Example
+  "error_details": null // Populated if agent_status is "error"
+}
+```
+
+### Resume Agent Execution Endpoint
+
+```
+POST /v1/agents/resume
+```
+Used to resume an agent after it has paused for human input (indicated by `agent_status="requires_human_input"` from the `/v1/agents/code/invoke` endpoint).
+
+Request body (`ResumeAgentRequest`):
+```json
+{
+  "thread_id": "thread_abc123", // The ID of the conversation to resume
+  "tool_call_id": "call_id_123", // The tool_call_id from the HumanInputRequest
+  "human_response": "Yes, proceed with the action." // The user's response
+}
+```
+The response is a standard `CodeAgentResponse` reflecting the agent's subsequent actions.
+
 
 ### List Models
 
@@ -211,6 +266,16 @@ GET /admin/providers
 ```
 GET /admin/usage-stats
 ```
+
+## Advanced Agent Features
+
+The OpenHands Code Agent has several advanced capabilities:
+
+-   **Standardized Tools**: Agents can use tools (like filesystem operations) defined via the `@openhands_tool` decorator and managed by a central `ToolRegistry`. Tool parameters are validated before execution.
+-   **Stateful Conversations (Checkpointing)**: By providing a `thread_id` in your `CodeAgentRequest`, the agent can maintain conversation history and state across multiple API calls. Currently, an in-memory checkpoint manager is used (state persists for server lifetime).
+-   **Human-in-the-Loop (HITL)**: The agent can pause its execution and request human input using the `ask_human_for_input` tool. The API client can then provide the human's response via the `/v1/agents/resume` endpoint to continue the agent's task.
+
+For more detailed explanations of these features, please refer to the main `README.md` file.
 
 ## Configuration
 
@@ -365,3 +430,19 @@ For issues and questions:
 2. Verify provider status: `python cli.py status`
 3. Test individual providers manually
 4. Check the provider's documentation for API changes
+
+## VS Code Extension: OpenHands AI Assistant
+
+The OpenHands AI Assistant VS Code extension integrates the LLM Aggregator directly into your editor.
+
+### Key Features:
+- **Contextual Chat (`openhands.askOpenHands` command)**: Ask questions about your code. The extension sends your prompt, selected code, and active file content to the backend.
+- **Code Generation (`openhands.invokeCodeAgent` command)**: Generate new code or refactor existing code. If a workspace is open, its path is sent as `project_directory`, enabling the agent to use filesystem tools (e.g., "Read 'src/main.py' and add comments to the main function."). Generated code is inserted into the editor, and explanations are shown separately.
+
+### Setup (Development):
+1.  Navigate to `openhands-vscode-extension` directory.
+2.  Run `npm install` then `npm run compile`.
+3.  Open this directory in VS Code and run the "Run Extension" debug configuration (F5).
+4.  In the new Extension Development Host window, configure the `openhands.api.baseUrl` setting to point to your running LLM Aggregator backend (e.g., `http://localhost:8000`).
+
+For more details, see the "VS Code Extension" section in `README.md`.

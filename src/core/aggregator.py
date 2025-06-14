@@ -151,9 +151,13 @@ class LLMAggregator:
         model_name_lower = model.name.lower()
         
         # Models known for reasoning
-        if any(keyword in model_name_lower for keyword in ['r1', 'reasoning', 'think', 'o1']):
+        if "claude-3-opus" in model_name_lower:
+            return 0.95
+        elif "claude-3-sonnet" in model_name_lower:
             return 0.9
-        elif any(keyword in model_name_lower for keyword in ['llama', 'qwen', 'deepseek']):
+        elif any(keyword in model_name_lower for keyword in ['r1', 'reasoning', 'think', 'o1']):
+            return 0.9
+        elif any(keyword in model_name_lower for keyword in ['llama', 'qwen', 'deepseek', "claude-3-haiku"]):
             return 0.8
         elif any(keyword in model_name_lower for keyword in ['gemma', 'mistral']):
             return 0.7
@@ -165,9 +169,11 @@ class LLMAggregator:
         
         model_name_lower = model.name.lower()
         
-        if any(keyword in model_name_lower for keyword in ['code', 'coder', 'codestral']):
+        if "claude-3-opus" in model_name_lower or "claude-3-sonnet" in model_name_lower:
             return 0.9
-        elif any(keyword in model_name_lower for keyword in ['deepseek', 'qwen']):
+        elif any(keyword in model_name_lower for keyword in ['code', 'coder', 'codestral']):
+            return 0.9
+        elif any(keyword in model_name_lower for keyword in ['deepseek', 'qwen', "claude-3-haiku"]): # Haiku is decent at coding
             return 0.8
         elif any(keyword in model_name_lower for keyword in ['llama', 'mistral']):
             return 0.7
@@ -179,9 +185,13 @@ class LLMAggregator:
         
         model_name_lower = model.name.lower()
         
-        if any(keyword in model_name_lower for keyword in ['math', 'deepseek', 'qwen']):
+        if "claude-3-opus" in model_name_lower:
+            return 0.9
+        elif "claude-3-sonnet" in model_name_lower:
+            return 0.85
+        elif any(keyword in model_name_lower for keyword in ['math', 'deepseek', 'qwen']):
             return 0.8
-        elif any(keyword in model_name_lower for keyword in ['llama', 'r1']):
+        elif any(keyword in model_name_lower for keyword in ['llama', 'r1', "claude-3-haiku"]):
             return 0.7
         else:
             return 0.6
@@ -191,9 +201,11 @@ class LLMAggregator:
         
         model_name_lower = model.name.lower()
         
-        if any(keyword in model_name_lower for keyword in ['creative', 'story', 'writer']):
+        if "claude-3-opus" in model_name_lower or "claude-3-sonnet" in model_name_lower:
             return 0.9
-        elif any(keyword in model_name_lower for keyword in ['llama', 'mistral', 'gemma']):
+        elif any(keyword in model_name_lower for keyword in ['creative', 'story', 'writer']):
+            return 0.9
+        elif any(keyword in model_name_lower for keyword in ['llama', 'mistral', 'gemma', "claude-3-haiku"]):
             return 0.7
         else:
             return 0.6
@@ -214,7 +226,9 @@ class LLMAggregator:
         
         model_name_lower = model.name.lower()
         
-        if any(keyword in model_name_lower for keyword in ['instruct', 'chat', 'assistant']):
+        if "claude" in model_name_lower: # Claude models are generally good at instruction following
+            return 0.9
+        elif any(keyword in model_name_lower for keyword in ['instruct', 'chat', 'assistant']):
             return 0.8
         else:
             return 0.7
@@ -240,6 +254,8 @@ class LLMAggregator:
         model_name_lower = model.name.lower()
         expertise = []
         
+        if "claude" in model_name_lower:
+            expertise.extend(['complex_reasoning', 'creative_writing', 'long_context'])
         if any(keyword in model_name_lower for keyword in ['code', 'coder']):
             expertise.append('programming')
         if any(keyword in model_name_lower for keyword in ['math']):
@@ -249,14 +265,24 @@ class LLMAggregator:
         if any(keyword in model_name_lower for keyword in ['creative', 'story']):
             expertise.append('creative_writing')
         
-        return expertise if expertise else ['general']
+        # Ensure 'general' if no specific expertise, or add to Claude's
+        if not expertise or "claude" in model_name_lower :
+            expertise.append('general')
+        return list(set(expertise)) # Remove duplicates
     
     def _identify_preferred_tasks(self, model: ModelInfo) -> List[str]:
         """Identify preferred task types for the model."""
         
         model_name_lower = model.name.lower()
         tasks = []
-        
+
+        if "claude-3-opus" in model_name_lower:
+            tasks.extend(['complex_analysis', 'research', 'long_document_summarization', 'advanced_coding'])
+        elif "claude-3-sonnet" in model_name_lower:
+            tasks.extend(['data_analysis', 'product_recommendations', 'content_generation', 'coding_tasks'])
+        elif "claude-3-haiku" in model_name_lower:
+            tasks.extend(['customer_support', 'quick_summaries', 'moderation', 'simple_coding'])
+
         if any(keyword in model_name_lower for keyword in ['code', 'coder']):
             tasks.extend(['code_generation', 'debugging', 'code_review'])
         if any(keyword in model_name_lower for keyword in ['math']):
@@ -266,7 +292,10 @@ class LLMAggregator:
         if any(keyword in model_name_lower for keyword in ['chat', 'assistant']):
             tasks.extend(['conversation', 'question_answering'])
         
-        return tasks if tasks else ['general_text_generation']
+        # Ensure 'general_text_generation' if no specific tasks or for general models
+        if not tasks or "claude" in model_name_lower:
+            tasks.append('general_text_generation')
+        return list(set(tasks)) # Remove duplicates
     
     async def chat_completion(
         self,

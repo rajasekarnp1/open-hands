@@ -4,6 +4,7 @@ uvicorn==0.24.0
 pydantic==2.5.0
 httpx==0.25.2
 aiohttp==3.9.1
+aiofiles>=0.8.0 # For async file operations
 asyncio-throttle==1.0.2
 
 # Database and storage
@@ -53,3 +54,9 @@ lxml>=4.9.0
 # Enhanced research features
 torch>=2.0.0
 numpy>=1.24.0
+
+# LLM Provider SDKs
+anthropic>=0.20.0
+
+# Agent Framework Dependencies
+docstring-parser>=0.15 # For parsing docstrings for tool definitions
