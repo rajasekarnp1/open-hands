@@ -93,11 +93,15 @@ class ToolRegistry:
                  parameters_schema = {"type": "object", "properties": {}}
 
 
-            tool_schemas.append({
+            tool_schema_entry = {
                 "name": tool_def.name,
                 "description": tool_def.description,
                 "parameters": parameters_schema
-            })
+            }
+            if tool_def.usage_notes:
+                tool_schema_entry["usage_notes"] = tool_def.usage_notes
+
+            tool_schemas.append(tool_schema_entry)
 
         if as_json_string:
             try:

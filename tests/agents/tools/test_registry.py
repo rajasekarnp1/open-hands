@@ -107,6 +107,7 @@ def test_registry_generate_llm_tool_descriptions_populated(registry: ToolRegistr
     assert "flag" in desc_tool2["parameters"]["required"]
     # project_directory should not be in parameters for LLM
     assert "project_directory" not in desc_tool2["parameters"]["properties"]
+    assert "usage_notes" not in desc_tool2 # sample_tool_def_2 has no usage_notes
 
 
     # Test as JSON string
@@ -120,6 +121,24 @@ def test_registry_generate_llm_tool_descriptions_populated(registry: ToolRegistr
     assert json_desc_tool1["parameters"]["properties"]["param1"]["type"] == "string"
 
 
+def test_registry_tool_with_usage_notes_in_description(registry: ToolRegistry, sample_tool_def_1: ToolDefinition):
+    sample_tool_def_1.usage_notes = "Important usage note here."
+    registry.register(sample_tool_def_1)
+
+    descriptions_list = registry.generate_llm_tool_descriptions(as_json_string=False)
+    assert len(descriptions_list) == 1
+    desc_tool1 = descriptions_list[0]
+    assert desc_tool1["name"] == sample_tool_def_1.name
+    assert "usage_notes" in desc_tool1
+    assert desc_tool1["usage_notes"] == "Important usage note here."
+
+    descriptions_json_str = registry.generate_llm_tool_descriptions(as_json_string=True)
+    descriptions_loaded_from_json = json.loads(descriptions_json_str)
+    json_desc_tool1 = descriptions_loaded_from_json[0]
+    assert "usage_notes" in json_desc_tool1
+    assert json_desc_tool1["usage_notes"] == "Important usage note here."
+
+
 def test_registry_tool_with_no_llm_params(registry: ToolRegistry):
     def no_param_tool_func(project_directory: str): # Only internal param
         """A tool with no LLM-facing parameters."""
@@ -130,7 +149,8 @@ def test_registry_tool_with_no_llm_params(registry: ToolRegistry):
         description="A tool with no LLM-facing parameters.",
         parameters=[], # Empty list for LLM
         function=no_param_tool_func,
-        internal_parameters=["project_directory"]
+        internal_parameters=["project_directory"],
+        usage_notes="This tool runs automatically based on context."
     )
     registry.register(no_param_tool_def)
 
@@ -141,5 +161,6 @@ def test_registry_tool_with_no_llm_params(registry: ToolRegistry):
     assert desc_no_param_tool["parameters"]["type"] == "object"
     assert desc_no_param_tool["parameters"]["properties"] == {} # No properties for LLM
     assert not desc_no_param_tool["parameters"].get("required", []) # No required params
+    assert desc_no_param_tool["usage_notes"] == "This tool runs automatically based on context."
 
 ```
