@@ -62,7 +62,7 @@ class RecursiveSelfOptimizer:
         
         # Read the current OpenHands implementation
         try:
-            with open("/workspace/experimental_optimizer.py", "r") as f:
+            with open("/app/experimental_optimizer.py", "r") as f:
                 source_code = f.read()
         except FileNotFoundError:
             console.print("[red]❌ Could not find experimental_optimizer.py[/red]")
@@ -114,7 +114,7 @@ class RecursiveSelfOptimizer:
         ]
         
         analysis = CodeAnalysis(
-            file_path="/workspace/experimental_optimizer.py",
+            file_path="/app/experimental_optimizer.py",
             class_name="OpenHandsIntegrator",
             methods=methods,
             complexity_score=complexity_score,
@@ -153,7 +153,7 @@ class RecursiveSelfOptimizer:
         )
         
         # Save the improved implementation
-        clone_file = Path(f"/workspace/{clone_class.lower()}.py")
+        clone_file = Path(f"/app/{clone_class.lower()}.py")
         clone_file.write_text(improved_code)
         
         self.clone_versions.append(clone_version)
