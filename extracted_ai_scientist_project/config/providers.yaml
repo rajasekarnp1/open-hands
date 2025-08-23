@@ -1,0 +1,100 @@
+# Provider configurations for the LLM API Aggregator
+
+providers:
+  openrouter:
+    name: "OpenRouter"
+    display_name: "OpenRouter"
+    provider_type: "free"
+    base_url: "https://openrouter.ai/api/v1"
+    priority: 1
+    rate_limit:
+      requests_per_minute: 20
+      requests_per_day: 50
+      concurrent_requests: 5
+    models:
+      - name: "deepseek/deepseek-r1:free"
+        display_name: "DeepSeek R1 (Free)"
+        capabilities: ["text_generation", "reasoning"]
+        context_length: 32768
+        is_free: true
+      - name: "deepseek/deepseek-chat:free"
+        display_name: "DeepSeek V3 (Free)"
+        capabilities: ["text_generation"]
+        context_length: 32768
+        is_free: true
+      - name: "meta-llama/llama-3.3-70b-instruct:free"
+        display_name: "Llama 3.3 70B Instruct (Free)"
+        capabilities: ["text_generation"]
+        context_length: 131072
+        is_free: true
+
+  groq:
+    name: "Groq"
+    display_name: "Groq"
+    provider_type: "free"
+    base_url: "https://api.groq.com/openai/v1"
+    priority: 2
+    rate_limit:
+      requests_per_minute: 30
+      requests_per_day: 14400
+      tokens_per_minute: 30000
+      concurrent_requests: 10
+    models:
+      - name: "llama-3.3-70b-versatile"
+        display_name: "Llama 3.3 70B Versatile"
+        capabilities: ["text_generation"]
+        context_length: 32768
+        is_free: true
+      - name: "llama-3.1-8b-instant"
+        display_name: "Llama 3.1 8B Instant"
+        capabilities: ["text_generation"]
+        context_length: 131072
+        is_free: true
+
+  cerebras:
+    name: "Cerebras"
+    display_name: "Cerebras"
+    provider_type: "free"
+    base_url: "https://api.cerebras.ai/v1"
+    priority: 3
+    rate_limit:
+      requests_per_minute: 30
+      tokens_per_minute: 60000
+      requests_per_day: 14400
+      concurrent_requests: 5
+    models:
+      - name: "llama3.1-8b"
+        display_name: "Llama 3.1 8B"
+        capabilities: ["text_generation"]
+        context_length: 8192
+        is_free: true
+      - name: "llama3.3-70b"
+        display_name: "Llama 3.3 70B"
+        capabilities: ["text_generation"]
+        context_length: 8192
+        is_free: true
+
+routing_rules:
+  - name: "code_generation"
+    conditions:
+      content_keywords: ["code", "python", "javascript", "programming", "function", "class"]
+      capabilities: ["code_generation"]
+    provider_preferences: ["openrouter", "groq", "cerebras"]
+    fallback_chain: ["openrouter", "groq", "cerebras"]
+    is_active: true
+
+  - name: "reasoning"
+    conditions:
+      content_keywords: ["think", "reason", "solve", "analyze", "logic", "problem"]
+      capabilities: ["reasoning"]
+    provider_preferences: ["openrouter", "groq"]
+    fallback_chain: ["openrouter", "groq", "cerebras"]
+    is_active: true
+
+  - name: "fast_response"
+    conditions:
+      max_tokens: 100
+      temperature: 0.0
+    provider_preferences: ["groq", "cerebras", "openrouter"]
+    fallback_chain: ["groq", "cerebras", "openrouter"]
+    is_active: true
