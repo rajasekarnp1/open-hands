@@ -46,6 +46,13 @@ except ImportError:
                 return 0
             mean_val = sum(x) / len(x)
             return (sum((i - mean_val) ** 2 for i in x) / len(x)) ** 0.5
+        @staticmethod
+        def min(x):
+            return min(x) if x else 0
+        @staticmethod
+        def max(x):
+            return max(x) if x else 0
+        # Note: np.median and np.random.choice are not yet shimmed.
 
 from ..models import ChatCompletionRequest, ModelInfo, ModelCapability
 
@@ -745,7 +752,8 @@ class MetaModelController:
         """Simple rule-based model selection when ML features are not available."""
         
         # Get message content for analysis
-        message_content = " ".join([msg.get("content", "") for msg in request.messages])
+        # ChatMessage objects are Pydantic models, access fields as attributes
+        message_content = " ".join([msg.content for msg in request.messages])
         content_lower = message_content.lower()
         
         # Score models based on simple rules
