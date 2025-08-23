@@ -30,6 +30,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 console = Console()
 logger = logging.getLogger(__name__)
 
+# --- Start of Added Constants ---
+SIMULATED_LIGHTNING_API_URL = "https://api.lightning.ai/v1"
+SIMULATED_OPENHANDS_REPO_URL = "https://github.com/All-Hands-AI/OpenHands.git"
+SIMULATED_VM_REPO_PATH = "/workspace/openhands"  # Path used within simulated VM environments
+# --- End of Added Constants ---
+
+
 @dataclass
 class ResearchHypothesis:
     """Research hypothesis for AI-Scientist approach."""
@@ -202,7 +209,7 @@ class LightningAIIntegrator:
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("LIGHTNING_API_KEY")
-        self.base_url = "https://api.lightning.ai/v1"
+        self.base_url = SIMULATED_LIGHTNING_API_URL
         self.session = requests.Session()
         if self.api_key:
             self.session.headers.update({"Authorization": f"Bearer {self.api_key}"})
@@ -804,7 +811,7 @@ print(json.dumps(results, indent=2))
         
         # Run comprehensive analysis
         analysis_results = await self.vm_analyzer.run_comprehensive_analysis(
-            vm_id, "/workspace/openhands"
+            vm_id, SIMULATED_VM_REPO_PATH
         )
         
         console.print(f"[green]✅ VM analysis complete[/green]")
@@ -916,12 +923,12 @@ print(json.dumps(results, indent=2))
         
         # Step 2: Run Lightning AI analysis
         lightning_results = await self.run_lightning_ai_analysis(
-            "https://github.com/All-Hands-AI/OpenHands.git"
+            SIMULATED_OPENHANDS_REPO_URL
         )
         
         # Step 3: Run VM-based analysis
         vm_results = await self.run_vm_code_analysis(
-            "https://github.com/All-Hands-AI/OpenHands.git"
+            SIMULATED_OPENHANDS_REPO_URL
         )
         
         # Step 4: Generate research hypotheses

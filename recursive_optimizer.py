@@ -48,7 +48,11 @@ class CloneVersion:
 class RecursiveSelfOptimizer:
     """System that can analyze and improve its own OpenHands implementation."""
     
-    def __init__(self):
+    def __init__(self, input_script_path="experimental_optimizer.py", output_dir="."):
+        self.input_script_path = Path(input_script_path)
+        self.output_dir = Path(output_dir)
+        # Ensure output directory exists
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.clone_versions = []
         self.analysis_history = []
         self.improvement_cycles = 0
@@ -62,14 +66,18 @@ class RecursiveSelfOptimizer:
         
         # Read the current OpenHands implementation
         try:
-            with open("/workspace/experimental_optimizer.py", "r") as f:
+            with open(self.input_script_path, "r") as f:
                 source_code = f.read()
         except FileNotFoundError:
-            console.print("[red]❌ Could not find experimental_optimizer.py[/red]")
+            console.print(f"[red]❌ Could not find {self.input_script_path}[/red]")
             return None
         
         # Parse the AST to analyze the OpenHandsIntegrator class
-        tree = ast.parse(source_code)
+        try:
+            tree = ast.parse(source_code)
+        except SyntaxError as e:
+            console.print(f"[red]❌ Syntax error in {self.input_script_path}: {e}[/red]")
+            return None
         
         openhands_class = None
         methods = []
@@ -114,7 +122,7 @@ class RecursiveSelfOptimizer:
         ]
         
         analysis = CodeAnalysis(
-            file_path="/workspace/experimental_optimizer.py",
+            file_path=str(self.input_script_path),
             class_name="OpenHandsIntegrator",
             methods=methods,
             complexity_score=complexity_score,
@@ -153,7 +161,7 @@ class RecursiveSelfOptimizer:
         )
         
         # Save the improved implementation
-        clone_file = Path(f"/workspace/{clone_class.lower()}.py")
+        clone_file = self.output_dir / f"{clone_class.lower()}.py"
         clone_file.write_text(improved_code)
         
         self.clone_versions.append(clone_version)
@@ -707,10 +715,10 @@ async def main():
         border_style="blue"
     ))
     
-    optimizer = RecursiveSelfOptimizer()
+    optimizer = RecursiveSelfOptimizer(input_script_path="experimental_optimizer.py", output_dir="generated_clones_test")
     
     # Run a few improvement cycles
-    await optimizer.start_continuous_self_improvement(max_cycles=3, cycle_interval=5)
+    await optimizer.start_continuous_self_improvement(max_cycles=1, cycle_interval=5) # Modified for single cycle test run
 
 if __name__ == "__main__":
     asyncio.run(main())
