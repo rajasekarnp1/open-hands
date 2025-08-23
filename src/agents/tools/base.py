@@ -26,6 +26,7 @@ class ToolDefinition(BaseModel):
     function: Callable # The actual function to call, not exposed to LLM directly
     # Internal parameters are those injected by the agent runtime, not specified by LLM
     internal_parameters: List[str] = Field(default_factory=list)
+    usage_notes: Optional[str] = None # Additional notes for the LLM on how/when to use the tool
 
     class Config:
         arbitrary_types_allowed = True # To allow Callable
@@ -177,8 +178,35 @@ def openhands_tool(func: Callable) -> Callable:
         description=tool_description,
         parameters=tool_parameters,
         function=func,
-        internal_parameters=internal_params
+        internal_parameters=internal_params,
+        usage_notes=None # Placeholder, will be parsed next
     )
+
+    # Attempt to parse "Usage Notes:" from the long description
+    if parsed_docstring.long_description:
+        lines = parsed_docstring.long_description.splitlines()
+        in_usage_notes_section = False
+        usage_notes_lines = []
+        for line in lines:
+            stripped_line = line.strip()
+            if stripped_line.lower() == "usage notes:": # Section header
+                in_usage_notes_section = True
+            elif in_usage_notes_section:
+                if not stripped_line and not usage_notes_lines: # Skip leading blank lines in section
+                    continue
+                # If line is not indented or less indented than typical for a list item under a header,
+                # it might be the start of a new section. This is a heuristic.
+                # For simplicity, let's assume all subsequent lines until a new major section belong to usage_notes.
+                # A more robust parser would look for specific section-breaking patterns.
+                # For now, we capture all lines after "Usage Notes:" until the end of long_description.
+                # Or, better, until another similar-looking header or just dedented text.
+                # Let's assume for now "Usage Notes:" is the last custom section.
+                usage_notes_lines.append(line) # Keep original indentation for now
+
+        if usage_notes_lines:
+            # Join the lines and strip leading/trailing whitespace from the block
+            tool_def.usage_notes = inspect.cleandoc("\n".join(usage_notes_lines))
+
 
     # Register with the global tool registry
     global_tool_registry.register(tool_def)

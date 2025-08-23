@@ -27,13 +27,16 @@ from ..models import (
     SystemConfig,
     CodeAgentRequest,
     CodeAgentResponse,
-    ResumeAgentRequest # New import
+    ResumeAgentRequest,
+    PlanningAgentRequest, # New import
+    PlanningAgentResponse # New import
 )
 from pydantic import BaseModel
 
 from ..core.aggregator import LLMAggregator
 from ..agents.code_agent import CodeAgent
-from ..agents.checkpoint import InMemoryCheckpointManager, BaseCheckpointManager # New imports
+from ..agents.planning_agent import PlanningAgent # New import
+from ..agents.checkpoint import InMemoryCheckpointManager, BaseCheckpointManager
 from ..core.account_manager import AccountManager
 from ..core.router import ProviderRouter
 from ..core.rate_limiter import RateLimiter, RateLimitExceeded
@@ -50,15 +53,16 @@ if not settings.ADMIN_TOKEN:
     logger.warning("ADMIN_TOKEN not set in environment or .env file. Admin endpoints will be disabled if called.")
 
 # Global instances
-aggregator_instance: Optional[LLMAggregator] = None # Renamed for clarity
+aggregator_instance: Optional[LLMAggregator] = None
 code_agent_instance: Optional[CodeAgent] = None
+planning_agent_instance: Optional[PlanningAgent] = None # New global instance
 checkpoint_manager_instance: Optional[BaseCheckpointManager] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global aggregator_instance, code_agent_instance, checkpoint_manager_instance
+    global aggregator_instance, code_agent_instance, planning_agent_instance, checkpoint_manager_instance
     
     logger.info("Starting application lifespan...")
     
@@ -97,6 +101,13 @@ async def lifespan(app: FastAPI):
     code_agent_instance = CodeAgent(
         llm_aggregator=aggregator_instance,
         checkpoint_manager=checkpoint_manager_instance
+    )
+
+    # Initialize PlanningAgent
+    planning_agent_instance = PlanningAgent(
+        llm_aggregator=aggregator_instance,
+        checkpoint_manager=checkpoint_manager_instance,
+        code_agent=code_agent_instance # Pass the CodeAgent instance
     )
     
     logger.info("LLM API Aggregator and Agents initialized successfully.")
@@ -324,7 +335,7 @@ async def code_agent_invoke(
         logger.error(f"CodeAgent invocation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/v1/agents/resume", response_model=CodeAgentResponse)
+@app.post("/v1/agents/resume", response_model=PlanningAgentResponse) # Changed to PlanningAgentResponse
 async def resume_agent_execution(
     resume_request: ResumeAgentRequest,
     user_id: Optional[str] = Depends(get_user_id) # For consistency and potential future use
@@ -377,27 +388,67 @@ async def resume_agent_execution(
     # The most important part is the thread_id and other parameters that affect agent execution.
     # The `instruction` in this resumed request will be added to history by `generate_code`
     # if `is_new_thread` is true, which it won't be here. So we can pass a generic one.
-    # The `code_agent.generate_code` will load the history which now includes the human's answer.
+    # The PlanningAgent's generate_plan method will load the state (which includes the new human response)
+    # and then delegate to execute_next_step, which will find the paused step and resume CodeAgent.
 
     original_params = current_session_state.original_request_info
-    resumed_agent_request = CodeAgentRequest(
-        instruction="Continue based on human feedback.", # This instruction is for this specific call, history is main driver
+    # We need to reconstruct a PlanningAgentRequest using the original goal.
+    # The original goal should be part of original_request_info or accessible from current_plan.
+    goal_from_plan = current_session_state.current_plan.goal if current_session_state.current_plan else "Default goal if not found"
+    if "goal" in original_params: # If original PlanningAgentRequest's goal was stored
+        goal_from_plan = original_params["goal"]
+
+    resumed_planning_request = PlanningAgentRequest(
+        goal=goal_from_plan, # The original goal that led to this plan
         project_directory=original_params.get("project_directory"),
-        thread_id=resume_request.thread_id,
-        model_quality=original_params.get("model_quality"),
-        provider=original_params.get("provider"),
-        language=original_params.get("language") # Ensure language is also carried over if set
-        # Other fields from original_request_info could be added here too
+        thread_id=resume_request.thread_id
+        # Other relevant fields from original_params like preferred_agents etc. can be added if they were part of PlanningAgentRequest
     )
 
-    logger.debug(f"Calling generate_code for resumption with request: {resumed_agent_request.model_dump(exclude_none=True)}")
+    logger.debug(f"Calling PlanningAgent.generate_plan for resumption with request: {resumed_planning_request.model_dump(exclude_none=True)}")
     try:
-        # The agent will load the state (which includes the new human response) and continue.
-        response = await code_agent_instance.generate_code(resumed_agent_request)
+        # PlanningAgent.generate_plan will detect the "paused_for_human_input" status
+        # in the loaded plan and proceed to execute_next_step.
+        response = await planning_agent_instance.generate_plan(resumed_planning_request)
         return response
     except Exception as e:
-        logger.error(f"CodeAgent resumption error for thread_id {resume_request.thread_id}: {e}", exc_info=True)
+        logger.error(f"PlanningAgent resumption error for thread_id {resume_request.thread_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/agents/plan/invoke", response_model=PlanningAgentResponse)
+async def planning_agent_invoke(
+    request: PlanningAgentRequest,
+    user_id: Optional[str] = Depends(get_user_id) # For consistency
+):
+    """Endpoint to invoke the PlanningAgent to generate a plan."""
+    if not planning_agent_instance:
+        logger.error("PlanningAgent not initialized.")
+        raise HTTPException(status_code=503, detail="PlanningAgent not ready.")
+
+    # Validate project_directory if provided (similar to CodeAgent endpoint)
+    if request.project_directory:
+        logger.info(f"Received request for PlanningAgent with project_directory: {request.project_directory}")
+        try:
+            path_obj = Path(request.project_directory).resolve()
+            if not path_obj.exists():
+                logger.warning(f"Project directory '{request.project_directory}' (resolved: '{path_obj}') does not exist.")
+                raise HTTPException(status_code=400, detail=f"Project directory '{request.project_directory}' does not exist.")
+            if not path_obj.is_dir():
+                logger.warning(f"Project directory '{request.project_directory}' (resolved: '{path_obj}') is not a directory.")
+                raise HTTPException(status_code=400, detail=f"Project directory '{request.project_directory}' is not a directory.")
+            request.project_directory = str(path_obj) # Use resolved, absolute path
+            logger.info(f"Validated project_directory for PlanningAgent: {request.project_directory}")
+        except Exception as path_e:
+            logger.error(f"Error validating project directory for PlanningAgent '{request.project_directory}': {path_e}", exc_info=True)
+            raise HTTPException(status_code=400, detail=f"Error validating project directory: {str(path_e)}")
+
+    try:
+        response = await planning_agent_instance.generate_plan(request)
+        return response
+    except Exception as e:
+        logger.error(f"PlanningAgent invocation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error during plan generation: {str(e)}")
 
 
 @app.get("/v1/models")

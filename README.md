@@ -268,6 +268,7 @@ Agents can be equipped with tools to interact with external environments (like a
     - Discover available tools and their schemas to present to the LLM.
     - Retrieve the actual tool function for execution based on the LLM's request.
 - **Parameter Validation**: When an LLM requests a tool call, the provided parameters are validated against the tool's schema before execution. If validation fails, an error is returned to the LLM, allowing it to correct the parameters.
+- **Usage Notes**: Tools can include `usage_notes` (parsed from their docstrings via `@openhands_tool`) which are provided to the LLM in the tool descriptions. This gives richer static context to the LLM on how and when to best use a tool (e.g., "This tool is best for small files.").
 - **Filesystem Tools**: Pre-built tools like `read_file`, `write_file`, and `list_files` are available. These tools operate securely within a specified `project_directory`.
     - `read_file(filepath: str)`: Reads content of a relative path.
     - `write_file(filepath: str, content: str)`: Writes content to a relative path.
@@ -322,6 +323,43 @@ Agents can request human input or clarification during their execution.
 ```
 The agent then continues processing.
 
+### 4. Planning Agent & Orchestration
+The system includes a `PlanningAgent` capable of decomposing a high-level goal into a sequence of steps and then orchestrating their execution.
+- **Role**: Breaks down complex tasks into a structured plan.
+- **Plan Structure**: A `Plan` consists of multiple `Steps`. Each `Step` has a description, status (e.g., "pending", "completed"), and an assigned agent (e.g., "CodeAgent") or tool for execution.
+- **API Endpoint**: `POST /v1/agents/plan/invoke`
+    - **Request (`PlanningAgentRequest`):**
+      ```json
+      {
+        "goal": "Refactor the authentication module to use JWT.",
+        "project_directory": "/path/to/user/project", // Optional, for context and for sub-agents
+        "thread_id": "plan_thread_456" // Optional, for stateful planning & execution
+      }
+      ```
+    - **Response (`PlanningAgentResponse`):** Includes the generated (or ongoing) `Plan`, the overall `agent_status` of the planner (e.g., "plan_generated", "executing_step", "plan_completed", "paused_for_human_input", "plan_failed"), and `thread_id`.
+      ```json
+      {
+        "plan": {
+          "plan_id": "plan_xyz",
+          "goal": "Refactor the authentication module to use JWT.",
+          "steps": [
+            {"step_id": "step_1", "description": "Analyze existing auth module code in 'auth.py'", "status": "completed", "agent_to_use": "CodeAgent", "result": "Analysis complete, found X functions."},
+            {"step_id": "step_2", "description": "Identify JWT library and install it", "status": "pending", "agent_to_use": "CodeAgent"},
+            // ... more steps
+          ],
+          "plan_status": "executing_step" // Or other statuses
+        },
+        "agent_status": "executing_step",
+        "thread_id": "plan_thread_456"
+        // human_input_request might be present if a sub-agent paused
+      }
+      ```
+- **Orchestration**:
+    - After generating a plan, the `PlanningAgent` begins executing the first pending step.
+    - Currently, it can orchestrate steps assigned to `CodeAgent`.
+    - The `thread_id` from the `PlanningAgentRequest` is passed down to the `CodeAgent` to maintain a consistent conversational state and allow `CodeAgent` to use its own checkpointed history for the specific step.
+- **HITL Relay**: If a sub-agent (like `CodeAgent`) pauses for human input, the `PlanningAgent` will also pause. Its `PlanningAgentResponse` will have `agent_status="paused_for_human_input"` and will relay the `human_input_request` from the sub-agent. The same `/v1/agents/resume` endpoint is used with the `thread_id` to provide the human response, which then resumes the `PlanningAgent`, which in turn resumes the sub-agent.
+
 
 ## VS Code Extension: OpenHands AI Assistant
 
@@ -370,6 +408,18 @@ Currently, the extension is under development. To use it:
          - If you had text selected, it replaces the selection.
          - If no text was selected, it inserts the code at your cursor position.
      *   If an `explanation` is provided by the agent, it's shown in a new Markdown document opened beside your current editor.
+
+#### 3. OpenHands: Invoke Planning Agent for a Goal (`openhands.invokePlanningAgent`)
+   - **Purpose**: Decompose a high-level goal into a plan and potentially start its execution.
+   - **How to use**:
+     1. Open the Command Palette (Ctrl+Shift+P).
+     2. Type "OpenHands: Invoke Planning Agent for a Goal" and select the command.
+     3. Enter your high-level goal in the input box (e.g., "Implement user registration feature").
+   - **Functionality**:
+     *   The extension sends your goal and the current VS Code workspace root path (if any, as `project_directory`) to the `/v1/agents/plan/invoke` endpoint.
+     *   The generated (or ongoing) plan is displayed in a new Markdown document.
+     *   If a step executed by a sub-agent (like `CodeAgent`) requires human input, the question and relevant IDs (`thread_id`, `tool_call_id`) will be shown, guiding you to use an API client for the `/v1/agents/resume` endpoint to continue.
+     *   The VS Code extension currently initiates each plan as a new session. For continuing a plan or resuming from HITL, you would use an API client like Postman or curl with the `thread_id`.
 
 ## Usage Examples
 

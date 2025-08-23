@@ -78,6 +78,11 @@ async def read_file(project_directory: str, filepath: str) -> str:
 
     Returns:
         str: The content of the file, or an error message if reading fails.
+
+    Usage Notes:
+        - This tool is best for reading text-based files (e.g., .py, .txt, .md, .json).
+        - For very large files, the response might be truncated or slow. Consider if a summary or specific part of the file is needed instead of reading the whole content, if other tools for that exist.
+        - Ensure the filepath is accurate and points to a file, not a directory.
     """
     try:
         safe_path = _resolve_safe_path(project_directory, filepath)

@@ -124,6 +124,53 @@ def test_openhands_tool_pydantic_param_description():
     assert "Pydantic Model: SamplePydanticParam" in param_data_def.description
     assert param_data_def.required is True
 
+
+def test_openhands_tool_with_usage_notes():
+    @openhands_tool
+    def tool_with_notes(param1: str):
+        """Short description.
+
+        Long description.
+
+        Args:
+            param1 (str): Description of param1.
+
+        Usage Notes:
+            - Note 1 for usage.
+            - Note 2, be careful.
+        """
+        pass # pragma: no cover
+
+    tool_def = global_tool_registry.get_tool("tool_with_notes")
+    assert tool_def is not None
+    assert tool_def.usage_notes == "- Note 1 for usage.\n- Note 2, be careful."
+
+def test_openhands_tool_with_empty_usage_notes_section():
+    @openhands_tool
+    def tool_empty_notes(param1: str):
+        """Short description.
+        Args:
+            param1 (str): Description of param1.
+        Usage Notes:
+        """
+        pass # pragma: no cover
+    tool_def = global_tool_registry.get_tool("tool_empty_notes")
+    assert tool_def is not None
+    assert tool_def.usage_notes == "" # Empty string if section exists but is empty
+
+def test_openhands_tool_without_usage_notes_section():
+    @openhands_tool
+    def tool_no_notes_section(param1: str):
+        """Short description.
+        Args:
+            param1 (str): Description of param1.
+        """
+        pass # pragma: no cover
+    tool_def = global_tool_registry.get_tool("tool_no_notes_section")
+    assert tool_def is not None
+    assert tool_def.usage_notes is None
+
+
 # --- Tests for ToolParameter and ToolDefinition models ---
 
 def test_tool_parameter_creation():

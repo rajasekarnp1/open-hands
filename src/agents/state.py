@@ -6,35 +6,9 @@ from __future__ import annotations # For Python 3.7, 3.8 compatibility with Pyda
 from typing import List, Dict, Any, Optional, Union
 
 from pydantic import BaseModel, Field
+from .planning_models import Plan # Import Plan model
 
-class Message(BaseModel):
-    """
-    Represents a single message in a conversation history.
-    Compatible with OpenAI's message format and tool call structures.
-    """
-    role: str  # e.g., "system", "user", "assistant", "tool"
-
-    # Content can be a simple string or a list of content blocks (e.g., for multimodal later)
-    # For tool results, content is typically a string (output of the tool).
-    # For assistant requesting tool calls, content might be null if tool_calls is present.
-    content: Union[str, List[Dict[str, Any]], None] = None
-
-    name: Optional[str] = None  # For "tool" role, the name of the tool that was called.
-                                # For "assistant" role, can be assistant's name.
-
-    # For assistant messages that want to call tools
-    tool_calls: Optional[List[ToolCall]] = None
-
-    # For "tool" messages that are results of a tool call
-    tool_call_id: Optional[str] = None # ID from the assistant's tool_calls request
-
-    class Config:
-        # Pydantic v2: `model_config = {"validate_assignment": True}`
-        # For Pydantic v1, this is default behavior.
-        # We want to ensure that `content` can indeed be `None` if `tool_calls` is present.
-        # The `Union[..., None]` and `Optional` already handle this.
-        # `exclude_none=True` can be used during serialization if needed.
-        pass
+# --- Message and Tool Call Models ---
 
 class ToolCallFunction(BaseModel):
     """Function details for a tool call, as expected by OpenAI models."""
@@ -50,38 +24,53 @@ class ToolCall(BaseModel):
     function: ToolCallFunction
     type: str = "function" # Usually "function"
 
+class Message(BaseModel):
+    """
+    Represents a single message in a conversation history.
+    Compatible with OpenAI's message format and tool call structures.
+    """
+    role: str  # e.g., "system", "user", "assistant", "tool"
+    content: Union[str, List[Dict[str, Any]], None] = None
+    name: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    tool_call_id: Optional[str] = None
+
+    class Config:
+        pass
+
+# --- Session State Model ---
 
 class SessionState(BaseModel):
     """
-    Represents the state of an agent's session, primarily the conversation history.
+    Represents the state of an agent's session, including conversation history and current plan.
     This state can be checkpointed to allow for long-running, stateful interactions.
     """
     conversation_history: List[Message] = Field(default_factory=list)
-
-    # Optional unique identifier for the session or thread
     thread_id: Optional[str] = None
 
-    # Additional state variables can be added here as needed:
-    # current_plan: Optional[List[str]] = None
+    # Stores key, non-sensitive parts of the original agent request
+    # (e.g., CodeAgentRequest or PlanningAgentRequest)
+    original_request_info: Optional[Dict[str, Any]] = None
+
+    # Current plan being worked on by an agent
+    current_plan: Optional[Plan] = None
+
+    # Other potential state variables:
     # scratchpad: Dict[str, Any] = Field(default_factory=dict)
     # user_preferences: Dict[str, Any] = Field(default_factory=dict)
     # current_task_id: Optional[str] = None
-    original_request_info: Optional[Dict[str, Any]] = None # Store key, non-sensitive parts of original CodeAgentRequest
-
-    # Example: Storing last executed tool call info for context or debugging
-    # last_tool_call: Optional[Dict[str, Any]] = None
-    # last_tool_result: Optional[str] = None
+    # current_step_id: Optional[str] = None
 
     def add_message(self, role: str, content: Union[str, List[Dict[str, Any]], None],
                     name: Optional[str] = None,
-                    tool_calls: Optional[List[Dict[str, Any]]] = None,
+                    tool_calls: Optional[List[ToolCall]] = None, # Corrected type
                     tool_call_id: Optional[str] = None) -> None:
         """Helper method to add a message to the conversation history."""
         self.conversation_history.append(Message(
             role=role,
             content=content,
             name=name,
-            tool_calls=tool_calls,
+            tool_calls=tool_calls, # type: ignore - Pydantic handles this if input is dict
             tool_call_id=tool_call_id
         ))
 
@@ -99,6 +88,5 @@ class SessionState(BaseModel):
         return None
 
     class Config:
-        # Pydantic v2: `model_config = {"validate_assignment": True}`
         pass
 ```
