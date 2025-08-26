@@ -25,7 +25,9 @@ class ModelCapability(str, Enum):
     AUDIO = "audio"
     EMBEDDING = "embedding"
     REASONING = "reasoning"
+    ADVANCED_REASONING = "advanced_reasoning"
     MULTIMODAL = "multimodal"
+    SUMMARIZATION = "summarization"
 
 
 class ProviderType(str, Enum):
@@ -33,6 +35,7 @@ class ProviderType(str, Enum):
     FREE = "free"
     TRIAL_CREDIT = "trial_credit"
     PAID = "paid"
+    COMMERCIAL = "commercial"
 
 
 class RateLimit(BaseModel):
@@ -67,7 +70,7 @@ class ProviderConfig(BaseModel):
     base_url: str
     api_key_required: bool = True
     auth_header: str = "Authorization"
-    auth_prefix: str = "Bearer"
+    auth_prefix: Optional[str] = "Bearer"
     models: List[ModelInfo]
     rate_limit: RateLimit
     status: ProviderStatus = ProviderStatus.ACTIVE

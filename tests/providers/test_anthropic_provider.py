@@ -80,11 +80,11 @@ async def test_anthropic_chat_completion_api_error_mapping(anthropic_provider: A
 
     # Test different Anthropic errors and ensure they map to ProviderError subclasses
     error_mappings = [
-        (anthropic.RateLimitError(message="Rate limit exceeded", response=MagicMock(headers={}), body=None), RateLimitError),
-        (anthropic.AuthenticationError(message="Auth error", response=MagicMock(headers={}), body=None), AuthenticationError),
-        (anthropic.NotFoundError(message="Not found", response=MagicMock(headers={}), body=None), ModelNotFoundError),
-        (anthropic.APIStatusError(message="Generic API error", status_code=500, response=MagicMock(headers={}), body=None), ProviderError),
-        (anthropic.APIConnectionError(message="Connection error"), ProviderError), # No status_code attribute
+        (anthropic.RateLimitError(message="Rate limit exceeded", response=MagicMock(status_code=429), body=None), RateLimitError),
+        (anthropic.AuthenticationError(message="Auth error", response=MagicMock(status_code=401), body=None), AuthenticationError),
+        (anthropic.NotFoundError(message="Not found", response=MagicMock(status_code=404), body=None), ModelNotFoundError),
+        (anthropic.APIStatusError(message="Generic API error", response=MagicMock(status_code=500), body=None), ProviderError),
+        (anthropic.APIConnectionError(message="Connection error", request=MagicMock()), ProviderError),
     ]
 
     for anthropic_exception, expected_provider_exception in error_mappings:
@@ -161,7 +161,7 @@ async def test_anthropic_chat_completion_stream_api_error(anthropic_provider: An
     mock_sdk_client_stream = AsyncMock()
     # Simulate an error during stream creation or iteration
     # For an error directly on .create() before streaming starts:
-    mock_sdk_client_stream.messages.create = AsyncMock(side_effect=anthropic.APIConnectionError(message="Stream connection failed"))
+    mock_sdk_client_stream.messages.create = AsyncMock(side_effect=anthropic.APIConnectionError(message="Stream connection failed", request=MagicMock()))
 
     with patch.object(anthropic_provider, '_get_sdk_client', return_value=mock_sdk_client_stream):
         with pytest.raises(ProviderError): # Should map to ProviderError or a subclass
@@ -263,4 +263,3 @@ async def test_anthropic_no_user_assistant_messages_error(anthropic_provider: An
         with pytest.raises(ProviderError, match="No user or assistant messages provided for streaming"):
             async for _ in anthropic_provider.chat_completion_stream(request_no_user_msg, mock_anthropic_credentials):
                 pass # pragma: no cover
-```

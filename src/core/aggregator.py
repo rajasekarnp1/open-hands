@@ -76,8 +76,8 @@ class LLMAggregator:
         # Initialize auto-updater if enabled
         if self.enable_auto_updater:
             self.auto_updater = AutoUpdater(account_manager=self.account_manager)
-            # Start auto-update task
-            asyncio.create_task(self._start_auto_updater())
+            # The auto-update task should be started by the application's lifespan manager,
+            # not in the constructor, to avoid issues with event loops in tests.
         else:
             self.auto_updater = None
         

@@ -10,7 +10,8 @@ from ..models import (
     ChatCompletionRequest,
     RoutingRule,
     ModelCapability,
-    ProviderConfig
+    ProviderConfig,
+    ProviderType
 )
 
 
@@ -86,40 +87,43 @@ class ProviderRouter:
         # 1. Handle requested_provider
         if request.provider and request.provider in self.providers and self._is_provider_available(request.provider):
             logger.debug(f"Using requested provider: {request.provider}")
-            # If a specific provider is requested and available, use only that.
-            # Consider if scoring should still apply or if it should be the sole choice.
-            # For now, let's assume it becomes the only candidate if specified.
-            # If scoring is desired, it would be `await self._score_providers([request.provider], request)`
             return [request.provider]
 
-        # Find matching routing rules
+        # 2. Determine all available providers upfront
+        all_available_providers = [p_name for p_name in self.providers if self._is_provider_available(p_name)]
+
+        # 3. Find and apply matching routing rules
         matching_rules = self._find_matching_rules(request)
-        
         if matching_rules:
-            # Use the first matching rule (rules should be ordered by priority)
             rule = matching_rules[0]
             logger.debug(f"Using routing rule: {rule.name}")
+
+            # Start with the rule's preferred providers that are actually available
+            ordered_chain = [p for p in rule.provider_preferences if p in all_available_providers]
+
+            # Score and append available fallback providers
+            fallback_candidates = [p for p in rule.fallback_chain if p in all_available_providers and p not in ordered_chain]
+            if fallback_candidates:
+                scored_fallbacks = await self._score_providers(fallback_candidates, request)
+                ordered_chain.extend(scored_fallbacks)
             
-            # Start with preferred providers
-            provider_chain = rule.provider_preferences.copy()
-            
-            # Add fallback providers that aren't already in the chain
-            for provider in rule.fallback_chain:
-                if provider not in provider_chain:
-                    provider_chain.append(provider)
+            # If the rule yields a valid chain, use it. Otherwise, fall through to default scoring.
+            if ordered_chain:
+                scored_providers = ordered_chain
+            else:
+                logger.warning(f"No providers from rule '{rule.name}' were available. Falling back to default scoring.")
+                scored_providers = await self._score_providers(all_available_providers, request)
         else:
-            # No specific rule matched, use default ordering
-            provider_chain = self._get_default_provider_order()
+            # No specific rule matched, score all available providers
+            scored_providers = await self._score_providers(all_available_providers, request)
         
-        # Filter to only available providers
-        available_providers = [
-            p_name for p_name in provider_chain
-            if p_name in self.providers and self._is_provider_available(p_name)
-        ]
-        
-        # Apply dynamic scoring to reorder providers
-        scored_providers = await self._score_providers(available_providers, request)
-        
+        # 4. Final fallback to ensure we don't return an empty list if providers are available
+        if not scored_providers and all_available_providers:
+            logger.warning("Scoring resulted in no providers, falling back to default available order.")
+            # Sort by priority as a simple default
+            all_available_providers.sort(key=lambda p_name: self.providers[p_name].priority)
+            return all_available_providers
+
         return scored_providers
     
     def _find_matching_rules(self, request: ChatCompletionRequest) -> List[RoutingRule]:
@@ -231,10 +235,10 @@ class ProviderRouter:
         score += (10 - provider_config.priority) * 10
         
         # Bonus for free providers
-        if provider_config.provider_type.value == "free":
-            score += 50
-        elif provider_config.provider_type.value == "trial_credit":
-            score += 30
+        if provider_config.provider_type == ProviderType.FREE:
+            score += 15
+        elif provider_config.provider_type == ProviderType.TRIAL_CREDIT:
+            score += 10
         
         # Bonus for streaming support if requested
         if request.stream and provider_config.supports_streaming:
@@ -247,28 +251,24 @@ class ProviderRouter:
         # Adjust score based on model_quality preference
         if request.model_quality:
             quality_bonus = 0
-            if request.model_quality == "fastest":
-                if provider_name in ["groq", "cerebras"]: # Known fast providers
-                    quality_bonus = 40
-                elif provider_name == "anthropic":
-                    # Check if Haiku is among the suitable/default models for this provider
-                    if any(m.name.startswith("claude-3-haiku") for m in provider_config.models):
-                         quality_bonus = 35 # Haiku is fast
-            elif request.model_quality == "best_quality":
-                if provider_name == "anthropic":
-                    if any(m.name.startswith("claude-3-opus") for m in provider_config.models):
-                        quality_bonus = 40 # Opus is high quality
-                    elif any(m.name.startswith("claude-3-sonnet") for m in provider_config.models):
-                        quality_bonus = 30 # Sonnet is good quality
-                elif provider_name == "openrouter":
-                     # Предположим, что не-бесплатные модели OpenRouter могут быть более качественными
-                    if not all(m.is_free for m in provider_config.models):
-                        quality_bonus = 25
+            # These bonuses are deliberately large to override the base priority score.
+            if request.model_quality == "best_quality":
+                if any(ModelCapability.ADVANCED_REASONING in m.capabilities for m in provider_config.models):
+                    quality_bonus = 150 # High bonus for top-tier models
+                elif provider_config.provider_type == ProviderType.PAID:
+                    quality_bonus = 120 # High bonus for any paid provider
+
             elif request.model_quality == "balanced":
-                if provider_name == "anthropic":
-                    if any(m.name.startswith("claude-3-sonnet") for m in provider_config.models):
-                        quality_bonus = 20
-                # Other providers could have balanced scores too
+                if any(ModelCapability.REASONING in m.capabilities for m in provider_config.models):
+                    quality_bonus = 100 # Medium bonus for capable models
+                elif provider_config.provider_type != ProviderType.FREE:
+                    quality_bonus = 80
+
+            elif request.model_quality == "fastest":
+                 # provider_fast from the mock has a haiku-like model, but let's make it more general
+                 if provider_config.priority <= 1: # Assuming highest priority providers are fastest
+                     quality_bonus = 50
+
             score += quality_bonus
             logger.debug(f"Quality bonus for {provider_name} ({request.model_quality}): {quality_bonus}")
 

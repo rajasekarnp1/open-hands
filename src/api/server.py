@@ -25,15 +25,10 @@ from ..models import (
     AccountCredentials,
     ProviderConfig,
     SystemConfig,
-    CodeAgentRequest,
-    CodeAgentResponse,
-    ResumeAgentRequest # New import
 )
 from pydantic import BaseModel
 
 from ..core.aggregator import LLMAggregator
-from ..agents.code_agent import CodeAgent
-from ..agents.checkpoint import InMemoryCheckpointManager, BaseCheckpointManager # New imports
 from ..core.account_manager import AccountManager
 from ..core.router import ProviderRouter
 from ..core.rate_limiter import RateLimiter, RateLimitExceeded
@@ -51,21 +46,18 @@ if not settings.ADMIN_TOKEN:
 
 # Global instances
 aggregator_instance: Optional[LLMAggregator] = None # Renamed for clarity
-code_agent_instance: Optional[CodeAgent] = None
-checkpoint_manager_instance: Optional[BaseCheckpointManager] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global aggregator_instance, code_agent_instance, checkpoint_manager_instance
+    global aggregator_instance
     
     logger.info("Starting application lifespan...")
     
     # Initialize components
     account_manager = AccountManager()
     rate_limiter = RateLimiter()
-    checkpoint_manager_instance = InMemoryCheckpointManager() # Create checkpoint manager instance
 
     # Dynamically load providers (conceptual example, actual loading might be more complex)
     # This part should ideally discover all provider modules in src/providers/
@@ -92,14 +84,8 @@ async def lifespan(app: FastAPI):
         router=router,
         rate_limiter=rate_limiter
     )
-
-    # Initialize CodeAgent with the aggregator and checkpoint manager
-    code_agent_instance = CodeAgent(
-        llm_aggregator=aggregator_instance,
-        checkpoint_manager=checkpoint_manager_instance
-    )
     
-    logger.info("LLM API Aggregator and Agents initialized successfully.")
+    logger.info("LLM API Aggregator initialized successfully.")
     
     yield
     
@@ -279,124 +265,6 @@ async def contextual_chat_completions(
         raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         logger.error(f"Contextual chat completion error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/v1/agents/code/invoke", response_model=CodeAgentResponse)
-async def code_agent_invoke(
-    request: CodeAgentRequest,
-    user_id: Optional[str] = Depends(get_user_id) # For potential future use (e.g. user-specific limits)
-):
-    """Endpoint to invoke the CodeAgent."""
-    if not code_agent_instance:
-        raise HTTPException(status_code=503, detail="CodeAgent not ready")
-
-    # Validate project_directory if provided
-    if request.project_directory:
-        logger.info(f"Received request for CodeAgent with project_directory: {request.project_directory}")
-        try:
-            # Security: Resolve the path to prevent certain types of manipulation,
-            # though _resolve_safe_path in the tool itself is the primary defense.
-            path_obj = Path(request.project_directory).resolve()
-            if not path_obj.exists():
-                logger.warning(f"Project directory '{request.project_directory}' (resolved: '{path_obj}') does not exist.")
-                raise HTTPException(status_code=400, detail=f"Project directory '{request.project_directory}' does not exist.")
-            if not path_obj.is_dir():
-                logger.warning(f"Project directory '{request.project_directory}' (resolved: '{path_obj}') is not a directory.")
-                raise HTTPException(status_code=400, detail=f"Project directory '{request.project_directory}' is not a directory.")
-
-            # Update request.project_directory to the resolved, absolute path for consistency downstream
-            # This ensures that the agent and tools always work with a verified absolute path.
-            request.project_directory = str(path_obj)
-            logger.info(f"Validated project_directory: {request.project_directory}")
-
-        except SecurityException as se: # Assuming Path.resolve() might raise SecurityException for some odd paths
-            logger.error(f"Security exception resolving project directory '{request.project_directory}': {se}")
-            raise HTTPException(status_code=400, detail=f"Invalid project directory path (security concern): {request.project_directory}")
-        except Exception as path_e: # Catch other potential path errors during validation
-            logger.error(f"Error validating project directory '{request.project_directory}': {path_e}")
-            raise HTTPException(status_code=400, detail=f"Error validating project directory: {str(path_e)}")
-
-    try:
-        response = await code_agent_instance.generate_code(request)
-        return response
-    except Exception as e:
-        logger.error(f"CodeAgent invocation error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/v1/agents/resume", response_model=CodeAgentResponse)
-async def resume_agent_execution(
-    resume_request: ResumeAgentRequest,
-    user_id: Optional[str] = Depends(get_user_id) # For consistency and potential future use
-):
-    """Endpoint to resume CodeAgent execution after human input."""
-    if not code_agent_instance or not checkpoint_manager_instance:
-        logger.error("CodeAgent or CheckpointManager not initialized for resume.")
-        raise HTTPException(status_code=503, detail="Agent components not ready.")
-
-    logger.info(f"Resuming agent for thread_id: {resume_request.thread_id}, tool_call_id: {resume_request.tool_call_id}")
-
-    # 1. Load state
-    current_session_state = await checkpoint_manager_instance.load_state(resume_request.thread_id)
-    if not current_session_state:
-        logger.warning(f"No session state found for thread_id: {resume_request.thread_id} on resume.")
-        raise HTTPException(status_code=404, detail=f"No session state found for thread_id: {resume_request.thread_id}")
-
-    # 2. Add human response as a "tool" message to history
-    # The 'name' should match the tool that asked for human input, typically 'ask_human_for_input'.
-    # The 'tool_call_id' must match the ID of the tool call that was interrupted.
-    current_session_state.add_message(
-        role="tool",
-        name="ask_human_for_input", # Assuming this was the tool name that paused
-        content=resume_request.human_response,
-        tool_call_id=resume_request.tool_call_id
-    )
-
-    # 3. Save updated state
-    await checkpoint_manager_instance.save_state(resume_request.thread_id, current_session_state)
-
-    # 4. Re-construct the original CodeAgentRequest parameters for the agent to continue
-    # The agent's generate_code method will load the state (including the new human response)
-    # and continue the loop. The original instruction is already part of the history.
-    # We need to provide other parameters like project_directory, model_quality, etc.
-    # These are now stored in current_session_state.original_request_info.
-
-    if not current_session_state.original_request_info:
-        logger.error(f"Original request info not found in session state for thread_id: {resume_request.thread_id}")
-        raise HTTPException(status_code=500, detail="Internal error: Missing original request info for resumption.")
-
-    # Create a new CodeAgentRequest for the resumption call.
-    # The 'instruction' and 'context' are not strictly needed here as the conversation
-    # history drives the resumption, but they are required fields in CodeAgentRequest.
-    # We can use placeholders or retrieve them if stored separately (currently not).
-    # For now, the agent's _construct_initial_user_message_content is only called for new threads.
-    # When resuming, it adds the *new user message* which isn't what we want here.
-    # The generate_code method needs to be robust to being called with a history
-    # that already includes the initial user instruction.
-
-    # The most important part is the thread_id and other parameters that affect agent execution.
-    # The `instruction` in this resumed request will be added to history by `generate_code`
-    # if `is_new_thread` is true, which it won't be here. So we can pass a generic one.
-    # The `code_agent.generate_code` will load the history which now includes the human's answer.
-
-    original_params = current_session_state.original_request_info
-    resumed_agent_request = CodeAgentRequest(
-        instruction="Continue based on human feedback.", # This instruction is for this specific call, history is main driver
-        project_directory=original_params.get("project_directory"),
-        thread_id=resume_request.thread_id,
-        model_quality=original_params.get("model_quality"),
-        provider=original_params.get("provider"),
-        language=original_params.get("language") # Ensure language is also carried over if set
-        # Other fields from original_request_info could be added here too
-    )
-
-    logger.debug(f"Calling generate_code for resumption with request: {resumed_agent_request.model_dump(exclude_none=True)}")
-    try:
-        # The agent will load the state (which includes the new human response) and continue.
-        response = await code_agent_instance.generate_code(resumed_agent_request)
-        return response
-    except Exception as e:
-        logger.error(f"CodeAgent resumption error for thread_id {resume_request.thread_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
